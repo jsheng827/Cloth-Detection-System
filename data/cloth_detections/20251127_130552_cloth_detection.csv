@@ -1,6 +1,0 @@
-timestamp,tracking_id,global_id,clothing,confidence,image_path
-2025-11-27T13:06:16.666098,60,1,trousers|long_sleeve_top,0.75|0.75,data/cloth_detections\20251127T130616.666098_gid1_tid60.jpg
-2025-11-27T13:06:54.254204,62,3,long_sleeve_top|trousers,0.91|0.86,data/cloth_detections\20251127T130654.254204_gid3_tid62.jpg
-2025-11-27T13:08:08.848186,70,12,trousers|short_sleeve_top,0.84|0.25,data/cloth_detections\20251127T130808.848186_gid12_tid70.jpg
-2025-11-27T13:09:50.331146,75,22,trousers|long_sleeve_top,0.84|0.40,data/cloth_detections\20251127T130950.331146_gid22_tid75.jpg
-2025-11-27T13:10:28.319651,78,20,long_sleeve_top|trousers,0.65|0.51,data/cloth_detections\20251127T131028.319651_gid20_tid78.jpg

@@ -9,6 +9,7 @@ from ultralytics import YOLO
 class ClothDetectionService:
     """
     Runs a secondary YOLO model (best.pt) on person crops to detect clothing attributes.
+    Optionally runs a shoe detection model (shoelast.pt) on the lower half of person crops.
     Keeps track of which Global IDs (GID) have already been processed to avoid duplicates.
     Falls back to Tracking ID (TID) when GID is not available.
     """
@@ -16,8 +17,10 @@ class ClothDetectionService:
     def __init__(
         self,
         model_path: str = "./model/best.pt",
+        shoe_model_path: Optional[str] = None,
         output_dir: str = "data/cloth_detections",
         conf: float = 0.25,
+        shoe_conf: float = 0.55,
         process_interval: int = 30,
         min_size: int = 80,
         edge_margin: float = 0.03,
@@ -25,8 +28,13 @@ class ClothDetectionService:
     ) -> None:
         self.model_path = model_path
         self.model = YOLO(model_path)
+        self.shoe_model_path = shoe_model_path
+        self.shoe_model = None
+        if shoe_model_path and os.path.exists(shoe_model_path):
+            self.shoe_model = YOLO(shoe_model_path)
         self.output_dir = output_dir
         self.conf = conf
+        self.shoe_conf = shoe_conf  # Confidence threshold for shoe detection
         self.process_interval = process_interval  # Process every N frames per person
         self.min_size = min_size  # Minimum bounding box size (pixels)
         self.edge_margin = edge_margin  # Edge margin as fraction of frame dimension
@@ -184,6 +192,7 @@ class ClothDetectionService:
         if crop.size == 0:
             return None
 
+        # Run clothing detection on full person crop
         results = self.model.predict(crop, conf=self.conf, verbose=False)
         detections: List[str] = []
         confidences: List[str] = []
@@ -197,6 +206,22 @@ class ClothDetectionService:
                 conf = float(box.conf.item())
                 detections.append(names.get(cls_id, f"class_{cls_id}"))
                 confidences.append(f"{conf:.2f}")
+
+        # Run shoe detection on the lower half of the person crop
+        if self.shoe_model is not None:
+            h, w = crop.shape[:2]
+            shoe_roi = crop[int(h * 0.5) :, :]
+            
+            shoe_results = self.shoe_model.predict(shoe_roi, conf=self.shoe_conf, verbose=False)
+            for result in shoe_results:
+                names = result.names
+                if result.boxes is None:
+                    continue
+                for box in result.boxes:
+                    cls_id = int(box.cls.item())
+                    conf = float(box.conf.item())
+                    detections.append(names.get(cls_id, f"class_{cls_id}"))
+                    confidences.append(f"{conf:.2f}")
 
         if not detections:
             # Don't mark as processed on failure - allow retry

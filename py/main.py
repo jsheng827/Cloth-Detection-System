@@ -2,9 +2,10 @@ import argparse
 import csv
 import math
 import os
+import re
 import sys
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 try:
     import cv2
@@ -31,9 +32,18 @@ except Exception:
     raise
 
 from PersonDetection import parse_sources, open_captures, load_model
-from cloth_detection import ClothDetectionService
 from re_id import PersonReIDManager, init_reid
 from tracking import init_tracker
+from db import (
+    save_evaluation,
+    save_violation,
+    get_next_evaluation_and_cloth_ids,
+    get_next_violation_id,
+)
+from typing import Optional
+
+# Parameters for shoe detection filtering
+SHOE_CONFIDENCE_THRESHOLD = 0.55  # confidence required to consider a shoe detection
 
 
 def build_mosaic(frames: List[np.ndarray], cols: int | None = None) -> np.ndarray:
@@ -69,6 +79,145 @@ def build_mosaic(frames: List[np.ndarray], cols: int | None = None) -> np.ndarra
 
     mosaic = np.vstack(tiles)
     return mosaic
+
+
+def analyze_clothing_and_log(
+    person_crop: np.ndarray,
+    cam_idx: int,
+    clothing_model: YOLO,
+    shoe_model: Optional[YOLO],
+) -> Tuple[str, str, str]:
+    """
+    Run cloth and shoe models on a cropped person image, decide status, save into MongoDB,
+    and return (status, description, violation_type).
+    """
+    cloth_results = clothing_model(person_crop, verbose=False)[0]
+
+    # collect all classes detected on this person (clothing) with confidence scores
+    labels = []
+    label_confidences = {}  # Store label -> confidence mapping
+    for det in cloth_results.boxes:
+        cls_id = int(det.cls)
+        label = cloth_results.names.get(cls_id, "cloth")
+        confidence = float(det.conf)  # Get confidence score
+        labels.append(label)
+        # Store highest confidence if label appears multiple times
+        if label not in label_confidences or confidence > label_confidences[label]:
+            label_confidences[label] = confidence
+
+    # run shoe detection model on the lower half of the person crop (no tracking)
+    if shoe_model is not None:
+        h, w = person_crop.shape[:2]
+        shoe_roi = person_crop[int(h * 0.5) :, :]
+
+        shoe_results = shoe_model(
+            shoe_roi,
+            conf=SHOE_CONFIDENCE_THRESHOLD,
+            verbose=False,
+        )[0]
+
+        if shoe_results and shoe_results.boxes is not None:
+            for det in shoe_results.boxes:
+                cls_id = int(det.cls)
+                label = shoe_results.names.get(cls_id, "shoe")
+                confidence = float(det.conf)
+                labels.append(label)
+                if label not in label_confidences or confidence > label_confidences[label]:
+                    label_confidences[label] = confidence
+
+    if not labels:
+        clothing_category = "Unknown"
+    else:
+        clothing_category = ", ".join(sorted(set(labels)))
+
+    # very simple rule: mark some classes as violation
+    # Only match exact words, not substrings (e.g., "short" should match "shorts" or "short" but not "short_sleeve_top")
+    banned_keywords = ["short", "skirt", "crop", "flipflops", "sandals", "vest"]
+    
+    def is_banned(label_lower):
+        """Check if label contains any banned keyword as a whole word (not substring)."""
+        # Check exact match first
+        if label_lower in banned_keywords:
+            return True
+        
+        # Handle plural forms (e.g., "shorts" should match banned "short")
+        if label_lower == "shorts" and "short" in banned_keywords:
+            return True
+        
+        # Split by underscores to get individual words
+        words = label_lower.split("_")
+        # Check if any word exactly matches a banned keyword
+        # But exclude cases where "short" is part of "short_sleeve" (it's a modifier, not the item)
+        for word in words:
+            if word in banned_keywords:
+                # Special case: "short" in "short_sleeve_top" should NOT match
+                # Only match if "short" is the main item (like "short_pants" or standalone)
+                if word == "short" and "sleeve" in words:
+                    continue  # Skip "short" when it's part of "short_sleeve"
+                return True
+        
+        return False
+    
+    # Find which specific label(s) triggered the violation
+    banned_labels = [label for label in labels if is_banned(label.lower())]
+    is_violation = len(banned_labels) > 0
+
+    status = "Not Appropriate" if is_violation else "Appropriate"
+
+    # Incremental IDs based on existing records in MongoDB
+    eval_id, cloth_id = get_next_evaluation_and_cloth_ids()
+    details = "..." if is_violation else "-"
+
+    evaluation_doc = save_evaluation(
+        evaluation_id=eval_id,
+        clothing_detection_id=cloth_id,
+        clothing_category=clothing_category,
+        status=status,
+        details=details,
+    )
+
+    violation_desc = ""
+    violation_type = ""
+    if is_violation:
+        # Get all banned labels with their confidence scores (remove duplicates, keep unique)
+        unique_banned_labels = []
+        seen = set()
+        for label in banned_labels:
+            if label not in seen:
+                unique_banned_labels.append(label)
+                seen.add(label)
+        
+        # Build violation type string (comma-separated if multiple)
+        violation_type = ", ".join(unique_banned_labels) if unique_banned_labels else "unknown"
+        
+        # Build description with all violation types and their confidence scores
+        violation_parts = []
+        for label in unique_banned_labels:
+            confidence = label_confidences.get(label, 0.0)
+            confidence_pct = f"{confidence * 100:.1f}%"
+            violation_parts.append(f"{label}({confidence_pct})")
+        
+        # Format: "Detected {violation_type}(Confidence score), and {violation_type} (confidence score) on camera {cam_idx}"
+        if len(violation_parts) == 1:
+            violation_desc = f"Detected {violation_parts[0]} on camera {cam_idx}"
+        elif len(violation_parts) == 2:
+            violation_desc = f"Detected {violation_parts[0]}, and {violation_parts[1]} on camera {cam_idx}"
+        else:
+            # For 3+ violations: "Detected X, Y, and Z on camera N"
+            all_but_last = ", ".join(violation_parts[:-1])
+            violation_desc = f"Detected {all_but_last}, and {violation_parts[-1]} on camera {cam_idx}"
+        
+        vio_id = get_next_violation_id()
+        save_violation(
+            violation_id=vio_id,
+            evaluation_id=evaluation_doc["evaluation_id"],
+            evaluation_status=status,
+            violation_type=violation_type,
+            description=violation_desc,
+            image=person_crop,
+        )
+
+    return status, violation_desc, violation_type
 
 
 def main() -> None:
@@ -152,6 +301,12 @@ def main() -> None:
         type=str,
         default="./model/best.pt",
         help="Path to cloth detection YOLO checkpoint (default: ./model/best.pt)",
+    )
+    parser.add_argument(
+        "--shoe-model",
+        type=str,
+        default="./model/shoelast.pt",
+        help="Path to shoe detection YOLO checkpoint (default: ./model/shoelast.pt)",
     )
     parser.add_argument(
         "--max-age",
@@ -316,7 +471,25 @@ def main() -> None:
         if args.cloth_detect and not args.track:
             print("Error: --cloth-detect requires --track to be enabled", file=sys.stderr)
             sys.exit(4)
-        cloth_service: ClothDetectionService | None = None
+        
+        # Cloth detection models (MongoDB integration)
+        clothing_model: Optional[YOLO] = None
+        shoe_model: Optional[YOLO] = None
+        if args.cloth_detect:
+            try:
+                clothing_model = YOLO(args.cloth_model)
+                if os.path.exists(args.shoe_model):
+                    shoe_model = YOLO(args.shoe_model)
+                else:
+                    print(f"Warning: Shoe model not found at {args.shoe_model}. Shoe detection will be disabled.", file=sys.stderr)
+            except Exception as e:
+                print(f"Failed to initialize cloth/shoe detection models: {e}", file=sys.stderr)
+                sys.exit(5)
+        
+        # Track processed identities and frame counters for cloth detection
+        processed_identities: Dict[str, Dict[str, bool]] = {name: {} for name, _ in caps}
+        identity_frame_counters: Dict[str, Dict[str, int]] = {name: {} for name, _ in caps}
+        
         if args.track:
             # Initialize Re-ID only if requested
             if args.reid:
@@ -329,7 +502,7 @@ def main() -> None:
             # Initialize tracker (with or without Re-ID embeddings)
             for window_name, _ in caps:
                 trackers[window_name] = init_tracker(
-                    reid_extractor=reid_extractor,  # None if Re-ID not enabled
+                    reid_extractor=reid_extractor if args.reid else None,  # None if Re-ID not enabled
                     max_age=args.max_age,
                     min_hits=args.min_hits,
                     iou_threshold=args.track_iou,
@@ -337,19 +510,6 @@ def main() -> None:
                 )
                 if args.reid:
                     reid_frame_counters[window_name] = 0
-            if args.cloth_detect:
-                try:
-                    cloth_service = ClothDetectionService(
-                        model_path=args.cloth_model,
-                        conf=args.cloth_conf,
-                        process_interval=args.cloth_interval,
-                        min_size=args.cloth_min_size,
-                        edge_margin=args.cloth_edge_margin,
-                        max_retries=args.cloth_max_retries,
-                    )
-                except Exception as e:
-                    print(f"Failed to initialize cloth detection model: {e}", file=sys.stderr)
-                    sys.exit(5)
 
         while True:
             frames: List = []
@@ -447,37 +607,16 @@ def main() -> None:
                                     window_name, trk["track_id"], embedding
                                 )
 
-                        cv2.rectangle(frame_to_show, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        # Determine status color based on violation detection (default to green/pending)
+                        status = "Pending"
+                        status_color = (255, 255, 0)  # Yellow for pending
+                        
                         # Build label: TID always shown when tracking, GID only when Re-ID enabled
                         label_parts = []
                         if args.track:
                             label_parts.append(f"TID {trk['track_id']}")
                         if args.reid and global_id is not None:
                             label_parts.append(f"GID {global_id}")
-                        label = " | ".join(label_parts) if label_parts else ""
-                        if label:
-                            ((tw, th), baseline) = cv2.getTextSize(
-                                label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
-                            )
-                            frame_h = frame_to_show.shape[0]
-                            label_y = min(y2 + th + baseline + 4, frame_h - 1)
-                            cv2.rectangle(
-                                frame_to_show,
-                                (x1, y2),
-                                (x1 + tw + 6, label_y),
-                                (0, 255, 0),
-                                -1,
-                            )
-                            cv2.putText(
-                                frame_to_show,
-                                label,
-                                (x1 + 3, min(y2 + th + baseline, frame_h - 2)),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.5,
-                                (0, 0, 0),
-                                1,
-                                cv2.LINE_AA,
-                            )
 
                         if csv_writer is not None:
                             frame_seq_nums[window_name] += 1
@@ -496,12 +635,101 @@ def main() -> None:
                                     trk["score"],
                                 ]
                             )
-                        if cloth_service:
-                            cloth_service.process(
-                                tracking_id=trk["track_id"],
-                                frame=frame,
-                                bbox=trk["bbox"],
-                                global_id=global_id,
+                        # Cloth detection with MongoDB integration
+                        if args.cloth_detect and clothing_model is not None:
+                            identity_key = f"GID_{global_id}" if global_id is not None else f"TID_{trk['track_id']}"
+                            
+                            # Initialize frame counter for this identity if not exists
+                            if identity_key not in identity_frame_counters[window_name]:
+                                identity_frame_counters[window_name][identity_key] = 0
+                            
+                            identity_frame_counters[window_name][identity_key] += 1
+                            
+                            # Check if we should process now (interval-based, per identity)
+                            should_process = (
+                                identity_frame_counters[window_name][identity_key] % args.cloth_interval == 0
+                            )
+                            
+                            # Check if already processed
+                            already_processed = processed_identities[window_name].get(identity_key, False)
+                            
+                            # Check if person is fully visible
+                            bbox_w = x2 - x1
+                            bbox_h = y2 - y1
+                            frame_h, frame_w = frame.shape[:2]
+                            is_visible = (
+                                bbox_w >= args.cloth_min_size
+                                and bbox_h >= args.cloth_min_size
+                                and x1 >= int(frame_w * args.cloth_edge_margin)
+                                and y1 >= int(frame_h * args.cloth_edge_margin)
+                                and x2 <= int(frame_w * (1 - args.cloth_edge_margin))
+                                and y2 <= int(frame_h * (1 - args.cloth_edge_margin))
+                            )
+                            
+                            if should_process and not already_processed and is_visible:
+                                # Crop person region
+                                person_crop = frame[
+                                    max(0, y1) : max(0, y2), max(0, x1) : max(0, x2)
+                                ]
+                                if person_crop.size > 0:
+                                    try:
+                                        # Extract camera index from window name
+                                        cam_idx = 1
+                                        if window_name.split()[-1].isdigit():
+                                            cam_idx = int(window_name.split()[-1]) + 1
+                                        elif any(char.isdigit() for char in window_name):
+                                            numbers = re.findall(r'\d+', window_name)
+                                            if numbers:
+                                                cam_idx = int(numbers[0]) + 1
+                                        
+                                        # Analyze clothing and save to MongoDB
+                                        status, violation_desc, violation_type = analyze_clothing_and_log(
+                                            person_crop,
+                                            cam_idx=cam_idx,
+                                            clothing_model=clothing_model,
+                                            shoe_model=shoe_model,
+                                        )
+                                        processed_identities[window_name][identity_key] = True
+                                        
+                                        # Set status color based on result
+                                        if status == "Appropriate":
+                                            status_color = (0, 255, 0)  # Green
+                                        elif status == "Not Appropriate":
+                                            status_color = (0, 0, 255)  # Red
+                                        else:
+                                            status_color = (255, 255, 0)  # Yellow
+                                        
+                                        # Add status to label if available
+                                        if status != "Pending":
+                                            label_parts.append(status)
+                                    except Exception as e:
+                                        print(f"Cloth detection error: {e}", file=sys.stderr)
+                        
+                        # Draw bounding box and label with appropriate color
+                        cv2.rectangle(frame_to_show, (x1, y1), (x2, y2), status_color, 2)
+                        label = " | ".join(label_parts) if label_parts else ""
+                        if label:
+                            ((tw, th), baseline) = cv2.getTextSize(
+                                label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+                            )
+                            frame_h = frame_to_show.shape[0]
+                            label_y = min(y2 + th + baseline + 4, frame_h - 1)
+                            cv2.rectangle(
+                                frame_to_show,
+                                (x1, y2),
+                                (x1 + tw + 6, label_y),
+                                status_color,
+                                -1,
+                            )
+                            cv2.putText(
+                                frame_to_show,
+                                label,
+                                (x1 + 3, min(y2 + th + baseline, frame_h - 2)),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (0, 0, 0),
+                                1,
+                                cv2.LINE_AA,
                             )
                 else:
                     frame_to_show = result.plot()
