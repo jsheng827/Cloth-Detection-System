@@ -1,0 +1,3 @@
+timestamp,tracking_id,global_id,clothing,confidence,image_path
+2025-11-27T12:45:02.444533,14,1,trousers,0.87,data/cloth_detections\20251127T124502.444533_gid1_tid14.jpg
+2025-11-27T12:45:26.784037,15,3,trousers|long_sleeve_top,0.88|0.76,data/cloth_detections\20251127T124526.784037_gid3_tid15.jpg

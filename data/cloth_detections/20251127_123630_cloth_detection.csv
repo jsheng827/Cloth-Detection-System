@@ -1,0 +1,6 @@
+timestamp,tracking_id,global_id,clothing,confidence,image_path
+2025-11-27T12:36:38.194989,123,,trousers|short_sleeve_top,0.57|0.55,data/cloth_detections\20251127T123638.194989_tid123.jpg
+2025-11-27T12:36:38.470439,124,,vest,0.44,data/cloth_detections\20251127T123638.470439_tid124.jpg
+2025-11-27T12:36:44.608256,125,,short_sleeve_top,0.36,data/cloth_detections\20251127T123644.608256_tid125.jpg
+2025-11-27T12:36:45.649669,126,,trousers,0.45,data/cloth_detections\20251127T123645.649669_tid126.jpg
+2025-11-27T12:37:04.831245,128,,long_sleeve_top,0.31,data/cloth_detections\20251127T123704.831245_tid128.jpg
