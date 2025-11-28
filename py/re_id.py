@@ -111,12 +111,18 @@ class PersonReIDManager:
     across multiple cameras.
     """
 
-    def __init__(self, similarity_threshold: float = 0.7, max_features_per_id: int = 50) -> None:
+    def __init__(
+        self, 
+        similarity_threshold: float = 0.7, 
+        max_features_per_id: int = 50,
+        initial_global_id: Optional[int] = None
+    ) -> None:
         self.similarity_threshold = similarity_threshold
         self.max_features_per_id = max_features_per_id
         self.gallery: Dict[int, List[np.ndarray]] = {}
         self.track_to_global: Dict[str, Dict[int, int]] = {}
-        self.next_global_id = 1
+        # Start from initial_global_id + 1 if provided, otherwise start from 1
+        self.next_global_id = (initial_global_id + 1) if initial_global_id is not None else 1
 
     def _register_feature(self, global_id: int, feature: np.ndarray) -> None:
         feats = self.gallery.setdefault(global_id, [])

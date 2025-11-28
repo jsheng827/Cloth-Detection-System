@@ -46,6 +46,8 @@ from db import (  # type: ignore
     get_next_violation_id,
     get_total_evaluations,
     get_total_violations,
+    get_evaluation_status_by_gid,
+    get_latest_global_id,
 )
 
 # Parameters for shoe detection filtering
@@ -103,6 +105,8 @@ def analyze_clothing_and_log(
     cam_idx: int,
     clothing_model: YOLO,
     shoe_model: Optional[YOLO],
+    global_id: Optional[int] = None,
+    tracking_id: Optional[int] = None,
 ) -> Tuple[str, str, str]:
     """
     Run cloth and shoe models on a cropped person image, decide status, save into MongoDB,
@@ -191,6 +195,8 @@ def analyze_clothing_and_log(
         clothing_category=clothing_category,
         status=status,
         details=details,
+        global_id=global_id,
+        tracking_id=tracking_id,
     )
 
     violation_desc = ""
@@ -371,19 +377,13 @@ def run_streaming_dashboard() -> None:
             0.05,
             disabled=not enable_cloth,
         )
-        cloth_interval = st.number_input(
-            "Cloth detection interval (frames)",
-            min_value=1,
-            max_value=120,
-            value=30,
-            help="Process cloth detection every N frames per person",
-            disabled=not enable_cloth,
-        )
+        # Cloth detection interval is set to 1 (process immediately on first detection)
+        cloth_interval = 1
         cloth_min_size = st.number_input(
             "Minimum bounding box size (pixels)",
             min_value=50,
             max_value=200,
-            value=80,
+            value=60,
             help="Minimum person size for cloth detection",
             disabled=not enable_cloth,
         )
@@ -547,7 +547,7 @@ def run_streaming_dashboard() -> None:
         enable_tracking, enable_reid, enable_cloth,
         max_age, min_hits, track_iou, similarity_lambda,
         reid_threshold, reid_interval, reid_model_path,
-        cloth_model_path, shoe_model_path, cloth_conf, cloth_interval, cloth_min_size,
+        cloth_model_path, shoe_model_path, cloth_conf, cloth_min_size,
         cloth_edge_margin, cloth_max_retries,
         device, camera_names
     ))
@@ -569,7 +569,12 @@ def run_streaming_dashboard() -> None:
                 except Exception as e:
                     st.error(f"Failed to initialize Re-ID model: {e}")
                     return
-                st.session_state["reid_manager"] = PersonReIDManager(similarity_threshold=reid_threshold)
+                # Get the latest GID from MongoDB to ensure persistence across restarts
+                latest_gid = get_latest_global_id()
+                st.session_state["reid_manager"] = PersonReIDManager(
+                    similarity_threshold=reid_threshold,
+                    initial_global_id=latest_gid
+                )
             # Initialize tracker (with or without Re-ID embeddings)
             for window_name, _ in caps:
                 st.session_state["trackers"][window_name] = init_tracker(
@@ -719,9 +724,19 @@ def run_streaming_dashboard() -> None:
                                     window_name, trk["track_id"], embedding
                                 )
 
-                        # Determine status color based on violation detection
+                        # Check MongoDB for existing evaluation status by GID
                         status = "Pending"
                         status_color = (255, 255, 0)  # Yellow for pending
+                        
+                        # If GID exists, check MongoDB for existing evaluation status
+                        if enable_cloth and global_id is not None:
+                            existing_status = get_evaluation_status_by_gid(global_id)
+                            if existing_status:
+                                status = existing_status
+                                if status == "Appropriate":
+                                    status_color = (0, 255, 0)  # Green
+                                elif status == "Not Appropriate":
+                                    status_color = (0, 0, 255)  # Red
                         
                         # Check if person is fully visible for cloth detection
                         bbox_w = x2 - x1
@@ -740,55 +755,58 @@ def run_streaming_dashboard() -> None:
                         if enable_cloth and clothing_model is not None and is_visible:
                             identity_key = f"GID_{global_id}" if global_id is not None else f"TID_{trk['track_id']}"
                             
-                            # Initialize frame counter for this identity if not exists
-                            if identity_key not in identity_frame_counters[window_name]:
-                                identity_frame_counters[window_name][identity_key] = 0
-                            
-                            identity_frame_counters[window_name][identity_key] += 1
-                            
-                            # Check if we should process now (interval-based, per identity)
-                            should_process = (
-                                identity_frame_counters[window_name][identity_key] % cloth_interval == 0
-                            )
-                            
-                            # Check if already processed
+                            # Check if already processed - if yes, skip all interval/visibility checks
                             already_processed = processed_identities[window_name].get(identity_key, False)
                             
-                            if should_process and not already_processed:
-                                # Crop person region
-                                person_crop = frame[
-                                    max(0, y1) : max(0, y2), max(0, x1) : max(0, x2)
-                                ]
-                                if person_crop.size > 0:
-                                    try:
-                                        # Extract camera index from window name (e.g., "Camera 0" -> 0, "footage/c0.avi" -> 0)
-                                        cam_idx = 1
-                                        if window_name.split()[-1].isdigit():
-                                            cam_idx = int(window_name.split()[-1]) + 1
-                                        elif any(char.isdigit() for char in window_name):
-                                            # Try to extract number from filename
-                                            numbers = re.findall(r'\d+', window_name)
-                                            if numbers:
-                                                cam_idx = int(numbers[0]) + 1
-                                        
-                                        status, violation_desc, violation_type = analyze_clothing_and_log(
-                                            person_crop,
-                                            cam_idx=cam_idx,
-                                            clothing_model=clothing_model,
-                                            shoe_model=shoe_model,
-                                        )
-                                        processed_identities[window_name][identity_key] = True
-                                        last_eval_time[window_name] = now
-                                        
-                                        # Set status color
-                                        if status == "Appropriate":
-                                            status_color = (0, 255, 0)  # Green
-                                        elif status == "Not Appropriate":
-                                            status_color = (0, 0, 255)  # Red
-                                        else:
-                                            status_color = (255, 255, 0)  # Yellow
-                                    except Exception as e:
-                                        st.warning(f"Cloth detection error: {e}")
+                            if not already_processed:
+                                # Initialize frame counter for this identity if not exists
+                                if identity_key not in identity_frame_counters[window_name]:
+                                    identity_frame_counters[window_name][identity_key] = 0
+                                
+                                identity_frame_counters[window_name][identity_key] += 1
+                                
+                                # Check if we should process now (interval-based, per identity)
+                                should_process = (
+                                    identity_frame_counters[window_name][identity_key] % cloth_interval == 0
+                                )
+                                
+                                if should_process:
+                                    # Crop person region
+                                    person_crop = frame[
+                                        max(0, y1) : max(0, y2), max(0, x1) : max(0, x2)
+                                    ]
+                                    if person_crop.size > 0:
+                                        try:
+                                            # Extract camera index from window name (e.g., "Camera 0" -> 0, "footage/c0.avi" -> 0)
+                                            cam_idx = 1
+                                            if window_name.split()[-1].isdigit():
+                                                cam_idx = int(window_name.split()[-1]) + 1
+                                            elif any(char.isdigit() for char in window_name):
+                                                # Try to extract number from filename
+                                                numbers = re.findall(r'\d+', window_name)
+                                                if numbers:
+                                                    cam_idx = int(numbers[0]) + 1
+                                            
+                                            status, violation_desc, violation_type = analyze_clothing_and_log(
+                                                person_crop,
+                                                cam_idx=cam_idx,
+                                                clothing_model=clothing_model,
+                                                shoe_model=shoe_model,
+                                                global_id=global_id,
+                                                tracking_id=trk["track_id"],
+                                            )
+                                            processed_identities[window_name][identity_key] = True
+                                            last_eval_time[window_name] = now
+                                            
+                                            # Set status color
+                                            if status == "Appropriate":
+                                                status_color = (0, 255, 0)  # Green
+                                            elif status == "Not Appropriate":
+                                                status_color = (0, 0, 255)  # Red
+                                            else:
+                                                status_color = (255, 255, 0)  # Yellow
+                                        except Exception as e:
+                                            st.warning(f"Cloth detection error: {e}")
 
                         cv2.rectangle(frame_to_show, (x1, y1), (x2, y2), status_color, 2)
                         # Build label: TID always shown when tracking, GID only when Re-ID enabled, status

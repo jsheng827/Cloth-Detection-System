@@ -39,6 +39,8 @@ from db import (
     save_violation,
     get_next_evaluation_and_cloth_ids,
     get_next_violation_id,
+    get_evaluation_status_by_gid,
+    get_latest_global_id,
 )
 from typing import Optional
 
@@ -86,6 +88,8 @@ def analyze_clothing_and_log(
     cam_idx: int,
     clothing_model: YOLO,
     shoe_model: Optional[YOLO],
+    global_id: Optional[int] = None,
+    tracking_id: Optional[int] = None,
 ) -> Tuple[str, str, str]:
     """
     Run cloth and shoe models on a cropped person image, decide status, save into MongoDB,
@@ -132,7 +136,7 @@ def analyze_clothing_and_log(
 
     # very simple rule: mark some classes as violation
     # Only match exact words, not substrings (e.g., "short" should match "shorts" or "short" but not "short_sleeve_top")
-    banned_keywords = ["short", "skirt", "crop", "flipflops", "sandals", "vest"]
+    banned_keywords = ["shorts", "skirt", "flipflops", "sandals", "vest","sling_dress","sling"]
     
     def is_banned(label_lower):
         """Check if label contains any banned keyword as a whole word (not substring)."""
@@ -174,6 +178,8 @@ def analyze_clothing_and_log(
         clothing_category=clothing_category,
         status=status,
         details=details,
+        global_id=global_id,
+        tracking_id=tracking_id,
     )
 
     violation_desc = ""
@@ -359,8 +365,8 @@ def main() -> None:
     parser.add_argument(
         "--cloth-min-size",
         type=int,
-        default=80,
-        help="Minimum bounding box size (pixels) for cloth detection (default: 80).",
+        default=70,
+        help="Minimum bounding box size (pixels) for cloth detection (default: 60).",
     )
     parser.add_argument(
         "--cloth-edge-margin",
@@ -498,7 +504,13 @@ def main() -> None:
                 except Exception as e:
                     print(f"Failed to initialize Re-ID extractor: {e}", file=sys.stderr)
                     sys.exit(3)
-                reid_manager = PersonReIDManager(similarity_threshold=args.reid_threshold)
+                # Get the latest GID from MongoDB to ensure persistence across restarts
+                latest_gid = get_latest_global_id()
+                print(f"[ReID] Starting from GID {latest_gid + 1} (latest in DB: {latest_gid})")
+                reid_manager = PersonReIDManager(
+                    similarity_threshold=args.reid_threshold,
+                    initial_global_id=latest_gid
+                )
             # Initialize tracker (with or without Re-ID embeddings)
             for window_name, _ in caps:
                 trackers[window_name] = init_tracker(
@@ -607,9 +619,19 @@ def main() -> None:
                                     window_name, trk["track_id"], embedding
                                 )
 
-                        # Determine status color based on violation detection (default to green/pending)
+                        # Check MongoDB for existing evaluation status by GID
                         status = "Pending"
                         status_color = (255, 255, 0)  # Yellow for pending
+                        
+                        # If GID exists, check MongoDB for existing evaluation status
+                        if args.cloth_detect and global_id is not None:
+                            existing_status = get_evaluation_status_by_gid(global_id)
+                            if existing_status:
+                                status = existing_status
+                                if status == "Appropriate":
+                                    status_color = (0, 255, 0)  # Green
+                                elif status == "Not Appropriate":
+                                    status_color = (0, 0, 255)  # Red
                         
                         # Build label: TID always shown when tracking, GID only when Re-ID enabled
                         label_parts = []
@@ -639,71 +661,74 @@ def main() -> None:
                         if args.cloth_detect and clothing_model is not None:
                             identity_key = f"GID_{global_id}" if global_id is not None else f"TID_{trk['track_id']}"
                             
-                            # Initialize frame counter for this identity if not exists
-                            if identity_key not in identity_frame_counters[window_name]:
-                                identity_frame_counters[window_name][identity_key] = 0
-                            
-                            identity_frame_counters[window_name][identity_key] += 1
-                            
-                            # Check if we should process now (interval-based, per identity)
-                            should_process = (
-                                identity_frame_counters[window_name][identity_key] % args.cloth_interval == 0
-                            )
-                            
-                            # Check if already processed
+                            # Check if already processed - if yes, skip all interval/visibility checks
                             already_processed = processed_identities[window_name].get(identity_key, False)
                             
-                            # Check if person is fully visible
-                            bbox_w = x2 - x1
-                            bbox_h = y2 - y1
-                            frame_h, frame_w = frame.shape[:2]
-                            is_visible = (
-                                bbox_w >= args.cloth_min_size
-                                and bbox_h >= args.cloth_min_size
-                                and x1 >= int(frame_w * args.cloth_edge_margin)
-                                and y1 >= int(frame_h * args.cloth_edge_margin)
-                                and x2 <= int(frame_w * (1 - args.cloth_edge_margin))
-                                and y2 <= int(frame_h * (1 - args.cloth_edge_margin))
-                            )
-                            
-                            if should_process and not already_processed and is_visible:
-                                # Crop person region
-                                person_crop = frame[
-                                    max(0, y1) : max(0, y2), max(0, x1) : max(0, x2)
-                                ]
-                                if person_crop.size > 0:
-                                    try:
-                                        # Extract camera index from window name
-                                        cam_idx = 1
-                                        if window_name.split()[-1].isdigit():
-                                            cam_idx = int(window_name.split()[-1]) + 1
-                                        elif any(char.isdigit() for char in window_name):
-                                            numbers = re.findall(r'\d+', window_name)
-                                            if numbers:
-                                                cam_idx = int(numbers[0]) + 1
-                                        
-                                        # Analyze clothing and save to MongoDB
-                                        status, violation_desc, violation_type = analyze_clothing_and_log(
-                                            person_crop,
-                                            cam_idx=cam_idx,
-                                            clothing_model=clothing_model,
-                                            shoe_model=shoe_model,
-                                        )
-                                        processed_identities[window_name][identity_key] = True
-                                        
-                                        # Set status color based on result
-                                        if status == "Appropriate":
-                                            status_color = (0, 255, 0)  # Green
-                                        elif status == "Not Appropriate":
-                                            status_color = (0, 0, 255)  # Red
-                                        else:
-                                            status_color = (255, 255, 0)  # Yellow
-                                        
-                                        # Add status to label if available
-                                        if status != "Pending":
-                                            label_parts.append(status)
-                                    except Exception as e:
-                                        print(f"Cloth detection error: {e}", file=sys.stderr)
+                            if not already_processed:
+                                # Initialize frame counter for this identity if not exists
+                                if identity_key not in identity_frame_counters[window_name]:
+                                    identity_frame_counters[window_name][identity_key] = 0
+                                
+                                identity_frame_counters[window_name][identity_key] += 1
+                                
+                                # Check if we should process now (interval-based, per identity)
+                                should_process = (
+                                    identity_frame_counters[window_name][identity_key] % args.cloth_interval == 0
+                                )
+                                
+                                # Check if person is fully visible
+                                bbox_w = x2 - x1
+                                bbox_h = y2 - y1
+                                frame_h, frame_w = frame.shape[:2]
+                                is_visible = (
+                                    bbox_w >= args.cloth_min_size
+                                    and bbox_h >= args.cloth_min_size
+                                    and x1 >= int(frame_w * args.cloth_edge_margin)
+                                    and y1 >= int(frame_h * args.cloth_edge_margin)
+                                    and x2 <= int(frame_w * (1 - args.cloth_edge_margin))
+                                    and y2 <= int(frame_h * (1 - args.cloth_edge_margin))
+                                )
+                                
+                                if should_process and is_visible:
+                                    # Crop person region
+                                    person_crop = frame[
+                                        max(0, y1) : max(0, y2), max(0, x1) : max(0, x2)
+                                    ]
+                                    if person_crop.size > 0:
+                                        try:
+                                            # Extract camera index from window name
+                                            cam_idx = 1
+                                            if window_name.split()[-1].isdigit():
+                                                cam_idx = int(window_name.split()[-1]) + 1
+                                            elif any(char.isdigit() for char in window_name):
+                                                numbers = re.findall(r'\d+', window_name)
+                                                if numbers:
+                                                    cam_idx = int(numbers[0]) + 1
+                                            
+                                            # Analyze clothing and save to MongoDB
+                                            status, violation_desc, violation_type = analyze_clothing_and_log(
+                                                person_crop,
+                                                cam_idx=cam_idx,
+                                                clothing_model=clothing_model,
+                                                shoe_model=shoe_model,
+                                                global_id=global_id,
+                                                tracking_id=trk["track_id"],
+                                            )
+                                            processed_identities[window_name][identity_key] = True
+                                            
+                                            # Set status color based on result
+                                            if status == "Appropriate":
+                                                status_color = (0, 255, 0)  # Green
+                                            elif status == "Not Appropriate":
+                                                status_color = (0, 0, 255)  # Red
+                                            else:
+                                                status_color = (255, 255, 0)  # Yellow
+                                            
+                                            # Add status to label if available
+                                            if status != "Pending":
+                                                label_parts.append(status)
+                                        except Exception as e:
+                                            print(f"Cloth detection error: {e}", file=sys.stderr)
                         
                         # Draw bounding box and label with appropriate color
                         cv2.rectangle(frame_to_show, (x1, y1), (x2, y2), status_color, 2)

@@ -22,7 +22,7 @@ class ClothDetectionService:
         conf: float = 0.25,
         shoe_conf: float = 0.55,
         process_interval: int = 30,
-        min_size: int = 80,
+        min_size: int = 60,
         edge_margin: float = 0.03,
         max_retries: int = 3,
     ) -> None:

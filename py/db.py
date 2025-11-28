@@ -3,6 +3,7 @@ from pymongo.errors import PyMongoError
 import base64
 import cv2
 from datetime import datetime
+from typing import Optional
 import os
 
 # Load the Atlas URI from environment variables first, fall back to the literal
@@ -45,6 +46,8 @@ def save_evaluation(
     clothing_category,
     status,
     details="-",
+    global_id=None,
+    tracking_id=None,
 ):
     doc = {
         "evaluation_id": evaluation_id,
@@ -54,6 +57,12 @@ def save_evaluation(
         "datetime": datetime.now().isoformat(),
         "details": details or "-",
     }
+    
+    # Add GID and TID if provided
+    if global_id is not None:
+        doc["global_id"] = global_id
+    if tracking_id is not None:
+        doc["tracking_id"] = tracking_id
 
     result = evaluations.insert_one(doc)
     doc["_id"] = str(result.inserted_id)
@@ -118,3 +127,40 @@ def get_total_evaluations():
 def get_total_violations():
     """Return the total count of violations in the database."""
     return violations.count_documents({})
+
+
+def get_evaluation_status_by_gid(global_id: Optional[int]) -> Optional[str]:
+    """
+    Get the evaluation status (Appropriate/Not Appropriate) for a given Global ID.
+    Returns the most recent evaluation status if multiple exist.
+    Returns None if no evaluation found.
+    """
+    if global_id is None:
+        return None
+    
+    # Find the most recent evaluation for this GID, sorted by datetime descending
+    evaluation = evaluations.find_one(
+        {"global_id": global_id},
+        sort=[("datetime", -1)]  # Most recent first
+    )
+    
+    if evaluation:
+        return evaluation.get("status")
+    return None
+
+
+def get_latest_global_id() -> int:
+    """
+    Get the latest (maximum) global_id from the evaluations collection.
+    Returns 0 if no evaluations exist with a global_id.
+    This ensures GID persistence across system restarts.
+    """
+    # Find the document with the maximum global_id
+    result = evaluations.find_one(
+        {"global_id": {"$exists": True, "$ne": None}},
+        sort=[("global_id", -1)]  # Sort by global_id descending
+    )
+    
+    if result and "global_id" in result:
+        return int(result["global_id"])
+    return 0
