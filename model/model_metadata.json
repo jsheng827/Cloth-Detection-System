@@ -1,0 +1,39 @@
+{
+  "models": [
+    {
+      "name": "yolo pretrained v8s",
+      "type": "detection",
+      "path": "./model/yolo_pretrained_v8s.pt",
+      "original_filename": "yolov8s.pt",
+      "uploaded_at": "2025-12-04T01:50:18.178542"
+    },
+    {
+      "name": "osnet_reid",
+      "type": "reid",
+      "path": "./model/osnet_reid.pth",
+      "original_filename": "osnet_duke_reid.pth",
+      "uploaded_at": "2025-12-04T01:50:29.359929"
+    },
+    {
+      "name": "clothing_detection",
+      "type": "cloth",
+      "path": "./model/clothing_detection.pt",
+      "original_filename": "bestclothingmodel.pt",
+      "uploaded_at": "2025-12-04T01:50:43.219552"
+    },
+    {
+      "name": "shoe",
+      "type": "shoe",
+      "path": "./model/shoe.pt",
+      "original_filename": "shoelast.pt",
+      "uploaded_at": "2025-12-04T01:50:54.197481"
+    },
+    {
+      "name": "yolo pretrained v8m",
+      "type": "detection",
+      "path": "./model/yolo_pretrained_v8m.pt",
+      "original_filename": "yolov8m.pt",
+      "uploaded_at": "2025-12-04T01:54:34.094542"
+    }
+  ]
+}

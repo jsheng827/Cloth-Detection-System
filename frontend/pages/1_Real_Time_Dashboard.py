@@ -39,6 +39,10 @@ if PY_DIR not in sys.path:
 from PersonDetection import parse_sources, open_captures, load_model  # type: ignore
 from re_id import PersonReIDManager, init_reid  # type: ignore
 from tracking import init_tracker  # type: ignore
+from model_manager import (  # type: ignore
+    get_models_by_type,
+    get_model_path,
+)
 from db import (  # type: ignore
     save_evaluation,
     save_violation,
@@ -51,7 +55,41 @@ from db import (  # type: ignore
 )
 
 # Parameters for shoe detection filtering
-SHOE_CONFIDENCE_THRESHOLD = 0.55  # confidence required to consider a shoe detection
+SHOE_CONFIDENCE_THRESHOLD = 0.25  # confidence required to consider a shoe detection
+
+
+def get_model_options(model_type: str) -> Tuple[List[str], List[str]]:
+    """
+    Get model options for dropdown.
+    
+    Returns:
+        Tuple of (model_names, model_paths) lists
+    """
+    models = get_models_by_type(model_type)
+    if not models:
+        return [], []
+    
+    names = [m["name"] for m in models]
+    paths = [m["path"] for m in models]
+    return names, paths
+
+
+def get_default_model_path(model_type: str, default_path: str) -> str:
+    """
+    Get default model path, checking if it exists in uploaded models first.
+    
+    Args:
+        model_type: Type of model (detection, reid, cloth, shoe)
+        default_path: Default path to use if no models uploaded
+    
+    Returns:
+        Model path string
+    """
+    models = get_models_by_type(model_type)
+    if models:
+        # Return the first uploaded model's path as default
+        return models[0]["path"]
+    return default_path
 
 
 @st.cache_resource
@@ -107,7 +145,9 @@ def analyze_clothing_and_log(
     shoe_model: Optional[YOLO],
     global_id: Optional[int] = None,
     tracking_id: Optional[int] = None,
+    shoe_conf: float = 0.55,
 ) -> Tuple[str, str, str]:
+
     """
     Run cloth and shoe models on a cropped person image, decide status, save into MongoDB,
     and return (status, description, violation_type).
@@ -127,15 +167,28 @@ def analyze_clothing_and_log(
             label_confidences[label] = confidence
 
     # run shoe detection model on the lower half of the person crop (no tracking)
+    # run shoe detection model on (almost) full person crop
     if shoe_model is not None:
         h, w = person_crop.shape[:2]
-        shoe_roi = person_crop[int(h * 0.5) :, :]
 
-        shoe_results = shoe_model(
-            shoe_roi,
-            conf=SHOE_CONFIDENCE_THRESHOLD,
+        # 1) Use bottom 80% of person (keep more context for small people)
+        y_start = int(h * 0.2)
+        shoe_roi = person_crop[y_start:h, :]
+
+        # 2) If ROI is too small, skip
+        if shoe_roi.shape[0] < 20 or shoe_roi.shape[1] < 20:
+            shoe_results = None
+        else:
+            # 3) Resize ROI to larger fixed size so shoes aren't tiny
+            shoe_roi_resized = cv2.resize(shoe_roi, (640, 640))
+
+            # 4) Run shoe model
+            shoe_results = shoe_model(
+            shoe_roi_resized,
+            conf=shoe_conf,
             verbose=False,
         )[0]
+
 
         if shoe_results and shoe_results.boxes is not None:
             for det in shoe_results.boxes:
@@ -146,44 +199,86 @@ def analyze_clothing_and_log(
                 if label not in label_confidences or confidence > label_confidences[label]:
                     label_confidences[label] = confidence
 
-    if not labels:
-        clothing_category = "Unknown"
-    else:
-        clothing_category = ", ".join(sorted(set(labels)))
 
-    # very simple rule: mark some classes as violation
-    # Only match exact words, not substrings (e.g., "short" should match "shorts" or "short" but not "short_sleeve_top")
+        # Decide violation based on all labels
     banned_keywords = ["short", "skirt", "crop", "flipflops", "sandals", "vest"]
-    
+
     def is_banned(label_lower):
-        """Check if label contains any banned keyword as a whole word (not substring)."""
-        # Check exact match first
         if label_lower in banned_keywords:
             return True
-        
-        # Handle plural forms (e.g., "shorts" should match banned "short")
         if label_lower == "shorts" and "short" in banned_keywords:
             return True
-        
-        # Split by underscores to get individual words
         words = label_lower.split("_")
-        # Check if any word exactly matches a banned keyword
-        # But exclude cases where "short" is part of "short_sleeve" (it's a modifier, not the item)
         for word in words:
             if word in banned_keywords:
-                # Special case: "short" in "short_sleeve_top" should NOT match
-                # Only match if "short" is the main item (like "short_pants" or standalone)
                 if word == "short" and "sleeve" in words:
-                    continue  # Skip "short" when it's part of "short_sleeve"
+                    continue
                 return True
-        
         return False
-    
-    # Find which specific label(s) triggered the violation
+
     banned_labels = [label for label in labels if is_banned(label.lower())]
     is_violation = len(banned_labels) > 0
-
     status = "Not Appropriate" if is_violation else "Appropriate"
+
+    # === NEW: limit to max 2 garments + 1 shoe for BOTH evaluation & violation ===
+    # Separate clothing vs shoe labels
+    clothing_keywords = ["short", "skirt", "crop", "vest"]
+    shoe_keywords = ["flipflops", "sandals"]
+
+    # Work on unique banned labels first (for violation)
+    unique_banned_labels = []
+    seen = set()
+    for label in banned_labels:
+        if label not in seen:
+            unique_banned_labels.append(label)
+            seen.add(label)
+
+    clothing_candidates = []
+    shoe_candidates = []
+
+    for label in unique_banned_labels:
+        ll = label.lower()
+        if any(k in ll for k in shoe_keywords):
+            shoe_candidates.append(label)
+        elif any(k in ll for k in clothing_keywords):
+            clothing_candidates.append(label)
+        else:
+            clothing_candidates.append(label)
+
+    clothing_candidates.sort(key=lambda l: label_confidences.get(l, 0.0), reverse=True)
+    shoe_candidates.sort(key=lambda l: label_confidences.get(l, 0.0), reverse=True)
+
+    selected_clothing = clothing_candidates[:2]
+    selected_shoes = shoe_candidates[:1]
+    selected_labels = selected_clothing + selected_shoes
+
+    # If no banned labels at all, still want to cap evaluation labels:
+    # build garments/shoes from ALL labels
+    all_clothing_candidates = []
+    all_shoe_candidates = []
+    for label in sorted(set(labels)):
+        ll = label.lower()
+        if any(k in ll for k in shoe_keywords):
+            all_shoe_candidates.append(label)
+        elif any(k in ll for k in clothing_keywords):
+            all_clothing_candidates.append(label)
+        else:
+            all_clothing_candidates.append(label)
+
+    all_clothing_candidates.sort(key=lambda l: label_confidences.get(l, 0.0), reverse=True)
+    all_shoe_candidates.sort(key=lambda l: label_confidences.get(l, 0.0), reverse=True)
+
+    eval_clothing = all_clothing_candidates[:2]
+    eval_shoes = all_shoe_candidates[:1]
+    eval_labels = eval_clothing + eval_shoes
+
+    if not eval_labels and labels:
+        eval_labels = sorted(set(labels))
+
+    if not eval_labels:
+        clothing_category = "Unknown"
+    else:
+        clothing_category = ", ".join(eval_labels)
 
     # Incremental IDs based on existing records in MongoDB
     eval_id, cloth_id = get_next_evaluation_and_cloth_ids()
@@ -202,34 +297,25 @@ def analyze_clothing_and_log(
     violation_desc = ""
     violation_type = ""
     if is_violation:
-        # Get all banned labels with their confidence scores (remove duplicates, keep unique)
-        unique_banned_labels = []
-        seen = set()
-        for label in banned_labels:
-            if label not in seen:
-                unique_banned_labels.append(label)
-                seen.add(label)
-        
-        # Build violation type string (comma-separated if multiple)
-        violation_type = ", ".join(unique_banned_labels) if unique_banned_labels else "unknown"
-        
-        # Build description with all violation types and their confidence scores
+        if not selected_labels:
+            selected_labels = unique_banned_labels
+
+        violation_type = ", ".join(selected_labels) if selected_labels else "unknown"
+
         violation_parts = []
-        for label in unique_banned_labels:
+        for label in selected_labels:
             confidence = label_confidences.get(label, 0.0)
             confidence_pct = f"{confidence * 100:.1f}%"
             violation_parts.append(f"{label}({confidence_pct})")
-        
-        # Format: "Detected {violation_type}(Confidence score), and {violation_type} (confidence score) on camera {cam_idx}"
+
         if len(violation_parts) == 1:
             violation_desc = f"Detected {violation_parts[0]} on camera {cam_idx}"
         elif len(violation_parts) == 2:
             violation_desc = f"Detected {violation_parts[0]}, and {violation_parts[1]} on camera {cam_idx}"
         else:
-            # For 3+ violations: "Detected X, Y, and Z on camera N"
             all_but_last = ", ".join(violation_parts[:-1])
             violation_desc = f"Detected {all_but_last}, and {violation_parts[-1]} on camera {cam_idx}"
-        
+
         vio_id = get_next_violation_id()
         save_violation(
             violation_id=vio_id,
@@ -317,24 +403,58 @@ def run_streaming_dashboard() -> None:
             value="0",
             help="Example: `0` or `0 1` or `footage/c0.avi footage/c1.avi`",
         )
-        model_path = st.text_input(
-            "YOLO model path or name",
-            value="./model/yolov8s.pt",
-        )
+        
+        # Detection model dropdown
+        detection_models, detection_paths = get_model_options("detection")
+        if detection_models:
+            default_detection_path = get_default_model_path("detection", "./model/yolov8s.pt")
+            default_idx = detection_paths.index(default_detection_path) if default_detection_path in detection_paths else 0
+            selected_detection = st.selectbox(
+                "Detection Model",
+                options=detection_models,
+                index=default_idx,
+                help="Select a detection model uploaded in Settings",
+            )
+            model_path = get_model_path(selected_detection, "detection") or "./model/yolov8s.pt"
+        else:
+            st.info("💡 No detection models uploaded. Go to Settings to upload models.")
+            model_path = st.text_input(
+                "YOLO model path or name",
+                value="./model/yolov8s.pt",
+                help="Or upload a model in Settings page",
+            )
         conf = st.slider("Detection confidence", 0.1, 1.0, 0.75, 0.05)
         imgsz = st.selectbox("Image size", [480, 640, 736, 960], index=1)
         enable_tracking = st.checkbox("Enable DeepSort tracking (shows TID)", value=True)
         enable_reid = False
+        reid_model_path = "./model/osnet_duke_reid.pth"  # Default initialization
         if enable_tracking:
             enable_reid = st.checkbox("Enable Multi-Camera Re-ID (shows TID and GID)", value=True)
         else:
             st.info("Enable tracking first to use Re-ID")
         
-        reid_model_path = st.text_input(
-            "Re-ID model path",
-            value="./model/osnet_duke_reid.pth",
-            disabled=not enable_reid,
-        )
+        # Re-ID model dropdown
+        if enable_reid:
+            reid_models, reid_paths = get_model_options("reid")
+            if reid_models:
+                default_reid_path = get_default_model_path("reid", "./model/osnet_duke_reid.pth")
+                default_idx = reid_paths.index(default_reid_path) if default_reid_path in reid_paths else 0
+                selected_reid = st.selectbox(
+                    "Re-ID Model",
+                    options=reid_models,
+                    index=default_idx,
+                    help="Select a Re-ID model uploaded in Settings",
+                    disabled=not enable_reid,
+                )
+                reid_model_path = get_model_path(selected_reid, "reid") or "./model/osnet_duke_reid.pth"
+            else:
+                st.info("💡 No Re-ID models uploaded. Go to Settings to upload models.")
+                reid_model_path = st.text_input(
+                    "Re-ID model path",
+                    value="./model/osnet_duke_reid.pth",
+                    disabled=not enable_reid,
+                    help="Or upload a model in Settings page",
+                )
         reid_threshold = st.slider(
             "Re-ID similarity threshold",
             0.3,
@@ -352,23 +472,58 @@ def run_streaming_dashboard() -> None:
             disabled=not enable_reid,
         )
         enable_cloth = False
+        cloth_model_path = "./model/bestclothingmodel.pt"  # Default initialization
+        shoe_model_path = "./model/shoelast.pt"  # Default initialization
         if enable_tracking:
             enable_cloth = st.checkbox(
-                "Enable Cloth Detection (YOLO best.pt, logs clothing attributes)", value=True
+                "Enable Cloth Detection (YOLO bestclothinmodel.pt, logs clothing attributes)", value=True
             )
         else:
             st.info("Enable tracking to use cloth detection")
-        cloth_model_path = st.text_input(
-            "Cloth detection model path",
-            value="./model/best.pt",
-            disabled=not enable_cloth,
-        )
-        shoe_model_path = st.text_input(
-            "Shoe detection model path",
-            value="./model/shoelast.pt",
-            disabled=not enable_cloth,
-            help="Path to shoe detection model (shoelast.pt)",
-        )
+        # Cloth model dropdown
+        if enable_cloth:
+            cloth_models, cloth_paths = get_model_options("cloth")
+            if cloth_models:
+                default_cloth_path = get_default_model_path("cloth", "./model/bestclothingmodel.pt")
+                default_idx = cloth_paths.index(default_cloth_path) if default_cloth_path in cloth_paths else 0
+                selected_cloth = st.selectbox(
+                    "Cloth Detection Model",
+                    options=cloth_models,
+                    index=default_idx,
+                    help="Select a cloth detection model uploaded in Settings",
+                    disabled=not enable_cloth,
+                )
+                cloth_model_path = get_model_path(selected_cloth, "cloth") or "./model/bestclothingmodel.pt"
+            else:
+                st.info("💡 No cloth models uploaded. Go to Settings to upload models.")
+                cloth_model_path = st.text_input(
+                    "Cloth detection model path",
+                    value="./model/bestclothingmodel.pt",
+                    disabled=not enable_cloth,
+                    help="Or upload a model in Settings page",
+                )
+            
+            # Shoe model dropdown
+            shoe_models, shoe_paths = get_model_options("shoe")
+            if shoe_models:
+                default_shoe_path = get_default_model_path("shoe", "./model/shoelast.pt")
+                default_idx = shoe_paths.index(default_shoe_path) if default_shoe_path in shoe_paths else 0
+                selected_shoe = st.selectbox(
+                    "Shoe Detection Model",
+                    options=shoe_models,
+                    index=default_idx,
+                    help="Select a shoe detection model uploaded in Settings",
+                    disabled=not enable_cloth,
+                )
+                shoe_model_path = get_model_path(selected_shoe, "shoe") or "./model/shoelast.pt"
+            else:
+                st.info("💡 No shoe models uploaded. Go to Settings to upload models.")
+                shoe_model_path = st.text_input(
+                    "Shoe detection model path",
+                    value="./model/shoelast.pt",
+                    disabled=not enable_cloth,
+                    help="Path to shoe detection model (shoelast.pt). Or upload a model in Settings page",
+                )
         cloth_conf = st.slider(
             "Cloth detection confidence",
             0.1,
@@ -377,13 +532,23 @@ def run_streaming_dashboard() -> None:
             0.05,
             disabled=not enable_cloth,
         )
+
+        shoe_conf = st.slider(
+        "Shoe detection confidence",
+        0.1,
+        1.0,
+        0.25,
+        0.05,
+        disabled=not enable_cloth,
+        )
+
         # Cloth detection interval is set to 1 (process immediately on first detection)
         cloth_interval = 1
         cloth_min_size = st.number_input(
             "Minimum bounding box size (pixels)",
             min_value=50,
             max_value=200,
-            value=60,
+            value=70,
             help="Minimum person size for cloth detection",
             disabled=not enable_cloth,
         )
@@ -443,6 +608,10 @@ def run_streaming_dashboard() -> None:
         st.markdown(
             "- **Detector**: ≤ 30 ms/frame"
         )
+        
+        st.markdown("---")
+        if st.button("⚙️ Go to Settings", help="Manage uploaded models"):
+            st.switch_page("pages/3_Settings.py")
 
     # Create metrics container that will be updated dynamically
     metrics_container = st.container()
@@ -794,7 +963,9 @@ def run_streaming_dashboard() -> None:
                                                 shoe_model=shoe_model,
                                                 global_id=global_id,
                                                 tracking_id=trk["track_id"],
+                                                shoe_conf=shoe_conf,
                                             )
+
                                             processed_identities[window_name][identity_key] = True
                                             last_eval_time[window_name] = now
                                             

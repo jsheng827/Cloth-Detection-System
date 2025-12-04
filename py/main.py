@@ -366,7 +366,7 @@ def main() -> None:
         "--cloth-min-size",
         type=int,
         default=70,
-        help="Minimum bounding box size (pixels) for cloth detection (default: 60).",
+        help="Minimum bounding box size (pixels) for cloth detection (default: 70).",
     )
     parser.add_argument(
         "--cloth-edge-margin",
