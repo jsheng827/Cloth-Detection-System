@@ -100,12 +100,14 @@ def get_next_evaluation_and_cloth_ids():
 
     This looks at the current document count so that new IDs always
     follow the records that are already stored.
+    Uses 5-digit padding (up to 99999) for consistent string sorting.
     """
     count = evaluations.count_documents({})
     idx = count + 1
     # Keep the EV / CD prefix pattern used in the seed data.
-    eval_id = f"EV{idx:02d}"
-    cloth_id = f"CD{idx:02d}"
+    # Use 5-digit padding for consistency with violation IDs
+    eval_id = f"EV{idx:05d}"
+    cloth_id = f"CD{idx:05d}"
     return eval_id, cloth_id
 
 
@@ -113,10 +115,11 @@ def get_next_violation_id():
     """
     Return the next incremental violation_id based on the existing
     documents in the violation collection.
+    Uses 5-digit padding (up to 99999) for consistent string sorting.
     """
     count = violations.count_documents({})
     idx = count + 1
-    return f"V{idx:02d}"
+    return f"V{idx:05d}"
 
 
 def get_total_evaluations():
@@ -164,3 +167,88 @@ def get_latest_global_id() -> int:
     if result and "global_id" in result:
         return int(result["global_id"])
     return 0
+
+
+def migrate_violation_ids_to_padded_format():
+    """
+    Migrate existing violation IDs to 5-digit padded format (V00001, V00002, etc.).
+    Handles old formats: V1, V01, V100, V146, etc.
+    
+    This function should be run once to update existing records.
+    Returns the number of violations updated.
+    """
+    import re
+    
+    updated_count = 0
+    
+    # Get all violations
+    all_violations = list(violations.find({}))
+    
+    for violation in all_violations:
+        old_id = violation.get("violation_id", "")
+        
+        # Skip if already in correct format (V followed by 5 digits)
+        if re.match(r"^V\d{5}$", old_id):
+            continue
+        
+        # Extract numeric part from old ID (handles V1, V01, V100, etc.)
+        match = re.search(r"V(\d+)", old_id)
+        if match:
+            numeric_part = int(match.group(1))
+            new_id = f"V{numeric_part:05d}"
+            
+            # Update the violation document
+            violations.update_one(
+                {"_id": violation["_id"]},
+                {"$set": {"violation_id": new_id}}
+            )
+            updated_count += 1
+    
+    return updated_count
+
+
+def migrate_evaluation_ids_to_padded_format():
+    """
+    Migrate existing evaluation and clothing detection IDs to 5-digit padded format.
+    Handles old formats: EV1, EV01, EV100, etc. and CD1, CD01, CD100, etc.
+    
+    This function should be run once to update existing records.
+    Returns the number of evaluations updated.
+    """
+    import re
+    
+    updated_count = 0
+    
+    # Get all evaluations
+    all_evaluations = list(evaluations.find({}))
+    
+    for evaluation in all_evaluations:
+        old_eval_id = evaluation.get("evaluation_id", "")
+        old_cloth_id = evaluation.get("clothing_detection_id", "")
+        update_fields = {}
+        
+        # Update evaluation_id if needed
+        if old_eval_id and not re.match(r"^EV\d{5}$", old_eval_id):
+            match = re.search(r"EV(\d+)", old_eval_id)
+            if match:
+                numeric_part = int(match.group(1))
+                new_eval_id = f"EV{numeric_part:05d}"
+                update_fields["evaluation_id"] = new_eval_id
+        
+        # Update clothing_detection_id if needed
+        if old_cloth_id and not re.match(r"^CD\d{5}$", old_cloth_id):
+            match = re.search(r"CD(\d+)", old_cloth_id)
+            if match:
+                numeric_part = int(match.group(1))
+                new_cloth_id = f"CD{numeric_part:05d}"
+                update_fields["clothing_detection_id"] = new_cloth_id
+        
+        if update_fields:
+            # Update the evaluation document
+            evaluations.update_one(
+                {"_id": evaluation["_id"]},
+                {"$set": update_fields}
+            )
+            updated_count += 1
+    
+    return updated_count

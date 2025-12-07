@@ -34,6 +34,13 @@
       "path": "./model/yolo_pretrained_v8m.pt",
       "original_filename": "yolov8m.pt",
       "uploaded_at": "2025-12-04T01:54:34.094542"
+    },
+    {
+      "name": "shoe lastest",
+      "type": "shoe",
+      "path": "./model/shoe_lastest.pt",
+      "original_filename": "Shoebest.pt",
+      "uploaded_at": "2025-12-07T23:06:31.340294"
     }
   ]
 }

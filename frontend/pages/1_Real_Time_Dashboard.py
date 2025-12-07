@@ -332,7 +332,7 @@ def run_streaming_dashboard() -> None:
             "Cloth detection confidence",
             0.1,
             1.0,
-            0.25,
+            0.50,
             0.05,
             disabled=not enable_cloth,
         )
