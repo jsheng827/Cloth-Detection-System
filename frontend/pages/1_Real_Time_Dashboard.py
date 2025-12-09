@@ -406,7 +406,7 @@ def run_streaming_dashboard() -> None:
             # Shoe model dropdown
             shoe_models, shoe_paths = get_model_options("shoe")
             if shoe_models:
-                default_shoe_path = get_default_model_path("shoe", "./model/shoelast.pt")
+                default_shoe_path = get_default_model_path("shoe", "./model/Shoebest.pt")
                 default_idx = shoe_paths.index(default_shoe_path) if default_shoe_path in shoe_paths else 0
                 selected_shoe = st.selectbox(
                     "Shoe Detection Model",
@@ -428,7 +428,7 @@ def run_streaming_dashboard() -> None:
             "Cloth detection confidence",
             0.1,
             1.0,
-            0.50,
+            0.35,
             0.05,
             disabled=not enable_cloth,
         )

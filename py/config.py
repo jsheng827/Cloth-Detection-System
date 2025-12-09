@@ -34,6 +34,30 @@ BANNED_KEYWORDS = ["shorts", "skirt", "flipflops", "sandals", "vest", "sling_dre
 CLOTHING_KEYWORDS = ["short", "skirt", "crop", "vest"]
 SHOE_KEYWORDS = ["flipflops", "sandals"]
 
+# Clothing Category Keywords
+TOP_KEYWORDS = [
+    "short_sleeve_top",
+    "long_sleeve_top",
+    "short_sleeve_outwear",
+    "long_sleeve_outwear",
+    "vest",
+    "sling",
+    "crop_top",
+    "tank_top",
+    "sleeveless",
+]
+BOTTOM_KEYWORDS = [
+    "shorts",
+    "trousers",
+    "skirt",
+]
+DRESS_KEYWORDS = [
+    "short_sleeve_dress",
+    "long_sleeve_dress",
+    "vest_dress",
+    "sling_dress",
+]
+
 # Maximum items to report in evaluation/violation
 MAX_CLOTHING_ITEMS = 2  # Maximum clothing items to report
 MAX_SHOE_ITEMS = 1  # Maximum shoe items to report

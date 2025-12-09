@@ -16,6 +16,9 @@ from config import (
     SHOE_KEYWORDS,
     MAX_CLOTHING_ITEMS,
     MAX_SHOE_ITEMS,
+    TOP_KEYWORDS,
+    BOTTOM_KEYWORDS,
+    DRESS_KEYWORDS,
 )
 from violation_settings import load_violation_settings
 from db import (
@@ -24,6 +27,147 @@ from db import (
     get_next_evaluation_and_cloth_ids,
     get_next_violation_id,
 )
+
+
+def categorize_clothing(label: str) -> Optional[str]:
+    """
+    Categorize a clothing label into TOP, BOTTOM, or DRESS.
+    
+    Args:
+        label: Clothing label to categorize
+        
+    Returns:
+        "TOP", "BOTTOM", "DRESS", or None if not a clothing item
+    """
+    label_lower = label.lower()
+    
+    # Check for dress first (dress keywords are more specific)
+    for dress_kw in DRESS_KEYWORDS:
+        if dress_kw.lower() in label_lower or label_lower in dress_kw.lower():
+            return "DRESS"
+    
+    # Check for top
+    for top_kw in TOP_KEYWORDS:
+        if top_kw.lower() in label_lower or label_lower in top_kw.lower():
+            return "TOP"
+    
+    # Check for bottom
+    for bottom_kw in BOTTOM_KEYWORDS:
+        if bottom_kw.lower() in label_lower or label_lower in bottom_kw.lower():
+            return "BOTTOM"
+    
+    return None
+
+
+def has_complete_coverage(
+    clothing_labels: List[str], label_confidences: Dict[str, float]
+) -> Tuple[bool, List[str]]:
+    """
+    Check if clothing detection has complete body coverage.
+    Complete coverage means:
+    - One unique TOP + one unique BOTTOM, OR
+    - One unique DRESS
+    
+    Also removes duplicates and returns the filtered labels.
+    If a dress is detected, exclude any tops/bottoms that are part of the dress.
+    
+    Args:
+        clothing_labels: List of detected clothing labels
+        label_confidences: Dictionary mapping labels to confidence scores
+        
+    Returns:
+        Tuple of (has_complete_coverage, filtered_unique_labels)
+    """
+    # Categorize all clothing labels
+    tops = []
+    bottoms = []
+    dresses = []
+    shoes = []
+    other = []
+    
+    for label in clothing_labels:
+        category = categorize_clothing(label)
+        if category == "TOP":
+            tops.append(label)
+        elif category == "BOTTOM":
+            bottoms.append(label)
+        elif category == "DRESS":
+            dresses.append(label)
+        elif any(kw in label.lower() for kw in SHOE_KEYWORDS):
+            shoes.append(label)
+        else:
+            other.append(label)
+    
+    # Remove duplicates within each category (keep highest confidence)
+    def deduplicate_category(items: List[str]) -> List[str]:
+        """Remove duplicates, keeping the one with highest confidence."""
+        seen = {}
+        for item in items:
+            item_lower = item.lower()
+            if item_lower not in seen:
+                seen[item_lower] = item
+            else:
+                # Keep the one with higher confidence
+                current_conf = label_confidences.get(item, 0.0)
+                existing_conf = label_confidences.get(seen[item_lower], 0.0)
+                if current_conf > existing_conf:
+                    seen[item_lower] = item
+        return list(seen.values())
+    
+    unique_tops = deduplicate_category(tops)
+    unique_bottoms = deduplicate_category(bottoms)
+    unique_dresses = deduplicate_category(dresses)
+    unique_shoes = deduplicate_category(shoes)
+    
+    # If a dress is detected, filter out tops/bottoms that might be part of the dress
+    # (e.g., if "vest_dress" is detected, don't count "vest" as a separate top)
+    if unique_dresses:
+        filtered_tops = []
+        filtered_bottoms = []
+        
+        # Collect all dress names (lowercase) for comparison
+        dress_names_lower = [d.lower() for d in unique_dresses]
+        
+        # Filter tops: exclude any top that is a substring of any dress
+        for top in unique_tops:
+            top_lower = top.lower()
+            # Keep top only if it's not part of any dress name
+            is_part_of_dress = any(top_lower in dress_name for dress_name in dress_names_lower)
+            if not is_part_of_dress:
+                filtered_tops.append(top)
+        
+        # Filter bottoms: exclude any bottom that is a substring of any dress
+        for bottom in unique_bottoms:
+            bottom_lower = bottom.lower()
+            is_part_of_dress = any(bottom_lower in dress_name for dress_name in dress_names_lower)
+            if not is_part_of_dress:
+                filtered_bottoms.append(bottom)
+        
+        # Update the lists
+        unique_tops = filtered_tops
+        unique_bottoms = filtered_bottoms
+    
+    # Check for complete coverage
+    has_complete = False
+    filtered_labels = []
+    
+    # Case 1: One unique dress (complete coverage)
+    if len(unique_dresses) == 1:
+        has_complete = True
+        filtered_labels = unique_dresses + unique_shoes
+    
+    # Case 2: One unique top + one unique bottom (complete coverage)
+    elif len(unique_tops) == 1 and len(unique_bottoms) == 1:
+        has_complete = True
+        filtered_labels = unique_tops + unique_bottoms + unique_shoes
+    
+    # Case 3: Incomplete coverage - don't report yet
+    else:
+        has_complete = False
+        # Still include shoes if any, but don't save to DB
+        filtered_labels = unique_shoes
+    
+    return has_complete, filtered_labels
 
 
 def is_banned(label_lower: str, banned_keywords: Optional[List[str]] = None) -> bool:
@@ -139,61 +283,37 @@ def analyze_clothing_and_log(
                     if label not in label_confidences or confidence > label_confidences[label]:
                         label_confidences[label] = confidence
 
-    # Find which specific label(s) triggered the violation
-    banned_labels = [label for label in labels if is_banned(label.lower(), banned_keywords)]
+    # Apply complete coverage check and deduplication FIRST
+    # Separate clothing from shoes for categorization
+    clothing_only_labels = [
+        label for label in labels
+        if not any(kw in label.lower() for kw in SHOE_KEYWORDS)
+    ]
+    
+    # Check for complete coverage (top+bottom OR dress) and get filtered labels
+    has_complete, filtered_labels = has_complete_coverage(
+        clothing_only_labels, label_confidences
+    )
+    
+    # If no complete coverage, return early without saving to database
+    if not has_complete:
+        # Return status without saving to database (wait for complete coverage)
+        violation_desc = ""
+        violation_type = ""
+        return "Pending", violation_desc, violation_type
+    
+    # Now check for violations using the filtered labels (complete coverage confirmed)
+    banned_labels = [label for label in filtered_labels if is_banned(label.lower(), banned_keywords)]
     is_violation = len(banned_labels) > 0
 
     status = "Not Appropriate" if is_violation else "Appropriate"
 
-    # Separate clothing vs shoe labels for violation reporting
-    unique_banned_labels = []
-    seen = set()
-    for label in banned_labels:
-        if label not in seen:
-            unique_banned_labels.append(label)
-            seen.add(label)
-
-    clothing_candidates = []
-    shoe_candidates = []
-
-    for label in unique_banned_labels:
-        ll = label.lower()
-        if any(k in ll for k in SHOE_KEYWORDS):
-            shoe_candidates.append(label)
-        elif any(k in ll for k in CLOTHING_KEYWORDS):
-            clothing_candidates.append(label)
-        else:
-            clothing_candidates.append(label)
-
-    clothing_candidates.sort(key=lambda l: label_confidences.get(l, 0.0), reverse=True)
-    shoe_candidates.sort(key=lambda l: label_confidences.get(l, 0.0), reverse=True)
-
-    selected_clothing = clothing_candidates[:MAX_CLOTHING_ITEMS]
-    selected_shoes = shoe_candidates[:MAX_SHOE_ITEMS]
-    selected_labels = selected_clothing + selected_shoes
-
-    # Build evaluation labels (limit to max items for both clothing and shoes)
-    all_clothing_candidates = []
-    all_shoe_candidates = []
-    for label in sorted(set(labels)):
-        ll = label.lower()
-        if any(k in ll for k in SHOE_KEYWORDS):
-            all_shoe_candidates.append(label)
-        elif any(k in ll for k in CLOTHING_KEYWORDS):
-            all_clothing_candidates.append(label)
-        else:
-            all_clothing_candidates.append(label)
-
-    all_clothing_candidates.sort(key=lambda l: label_confidences.get(l, 0.0), reverse=True)
-    all_shoe_candidates.sort(key=lambda l: label_confidences.get(l, 0.0), reverse=True)
-
-    eval_clothing = all_clothing_candidates[:MAX_CLOTHING_ITEMS]
-    eval_shoes = all_shoe_candidates[:MAX_SHOE_ITEMS]
-    eval_labels = eval_clothing + eval_shoes
-
-    if not eval_labels and labels:
-        eval_labels = sorted(set(labels))
-
+    # Build evaluation labels from filtered labels (already deduplicated and complete)
+    eval_labels = filtered_labels
+    
+    # Sort by confidence for consistent ordering
+    eval_labels.sort(key=lambda l: label_confidences.get(l, 0.0), reverse=True)
+    
     if not eval_labels:
         clothing_category = "Unknown"
     else:
@@ -205,6 +325,9 @@ def analyze_clothing_and_log(
         violation_desc = ""
         violation_type = ""
         return status, violation_desc, violation_type
+    
+    # Prepare violation reporting labels (from banned items in filtered labels)
+    selected_labels = banned_labels if banned_labels else []
 
     # Incremental IDs based on existing records in MongoDB
     eval_id, cloth_id = get_next_evaluation_and_cloth_ids()
@@ -223,9 +346,6 @@ def analyze_clothing_and_log(
     violation_desc = ""
     violation_type = ""
     if is_violation:
-        if not selected_labels:
-            selected_labels = unique_banned_labels
-
         violation_type = ", ".join(selected_labels) if selected_labels else "unknown"
 
         # Build description with all violation types and their confidence scores

@@ -4,6 +4,14 @@ from typing import Dict, List, Optional, Tuple
 
 import cv2
 from ultralytics import YOLO
+from config import (
+    CLOTH_CONFIDENCE_THRESHOLD,
+    CLOTH_EDGE_MARGIN,
+    CLOTH_INTERVAL,
+    CLOTH_MAX_RETRIES,
+    CLOTH_MIN_SIZE,
+    SHOE_CONFIDENCE_THRESHOLD,
+)
 
 
 class ClothDetectionService:
@@ -16,15 +24,15 @@ class ClothDetectionService:
 
     def __init__(
         self,
-        model_path: str = "./model/best.pt",
-        shoe_model_path: Optional[str] = None,
+        model_path: str = "./model/clothing_detection.pt",
+        shoe_model_path: Optional[str] = "./model/Shoebest.pt",
         output_dir: str = "data/cloth_detections",
-        conf: float = 0.25,
-        shoe_conf: float = 0.55,
-        process_interval: int = 30,
-        min_size: int = 60,
-        edge_margin: float = 0.03,
-        max_retries: int = 3,
+        conf: float = CLOTH_CONFIDENCE_THRESHOLD,
+        shoe_conf: float = SHOE_CONFIDENCE_THRESHOLD,
+        process_interval: int = CLOTH_INTERVAL,
+        min_size: int = CLOTH_MIN_SIZE,
+        edge_margin: float = CLOTH_EDGE_MARGIN,
+        max_retries: int = CLOTH_MAX_RETRIES,
     ) -> None:
         self.model_path = model_path
         self.model = YOLO(model_path)

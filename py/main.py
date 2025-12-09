@@ -39,7 +39,13 @@ from db import (
     get_latest_global_id,
 )
 from clothing_analysis import analyze_clothing_and_log
-from config import SHOE_CONFIDENCE_THRESHOLD
+from config import (
+    CLOTH_CONFIDENCE_THRESHOLD,
+    CLOTH_EDGE_MARGIN,
+    CLOTH_INTERVAL,
+    CLOTH_MAX_RETRIES,
+    CLOTH_MIN_SIZE,
+)
 from typing import Optional
 
 
@@ -157,14 +163,14 @@ def main() -> None:
     parser.add_argument(
         "--cloth-model",
         type=str,
-        default="./model/best.pt",
-        help="Path to cloth detection YOLO checkpoint (default: ./model/best.pt)",
+        default="./model/clothing_detection.pt",
+        help="Path to cloth detection YOLO checkpoint (default: ./model/clothing_detection.pt)",
     )
     parser.add_argument(
         "--shoe-model",
         type=str,
-        default="./model/shoelast.pt",
-        help="Path to shoe detection YOLO checkpoint (default: ./model/shoelast.pt)",
+        default="./model/Shoebest.pt",
+        help="Path to shoe detection YOLO checkpoint (default: ./model/Shoebest.pt)",
     )
     parser.add_argument(
         "--max-age",
@@ -205,31 +211,31 @@ def main() -> None:
     parser.add_argument(
         "--cloth-conf",
         type=float,
-        default=0.25,
+        default=CLOTH_CONFIDENCE_THRESHOLD,
         help="Confidence threshold for cloth detection model.",
     )
     parser.add_argument(
         "--cloth-interval",
         type=int,
-        default=30,
+        default=CLOTH_INTERVAL,
         help="Process cloth detection every N frames per person (default: 30).",
     )
     parser.add_argument(
         "--cloth-min-size",
         type=int,
-        default=70,
+        default=CLOTH_MIN_SIZE,
         help="Minimum bounding box size (pixels) for cloth detection (default: 70).",
     )
     parser.add_argument(
         "--cloth-edge-margin",
         type=float,
-        default=0.03,
+        default=CLOTH_EDGE_MARGIN,
         help="Edge margin as fraction of frame dimension (default: 0.03 = 3%%).",
     )
     parser.add_argument(
         "--cloth-max-retries",
         type=int,
-        default=3,
+        default=CLOTH_MAX_RETRIES,
         help="Maximum retry attempts for failed cloth detections (default: 3).",
     )
     parser.add_argument(
@@ -513,30 +519,10 @@ def main() -> None:
                         if args.cloth_detect and clothing_model is not None:
                             identity_key = f"GID_{global_id}" if global_id is not None else f"TID_{trk['track_id']}"
                             
-                            # FIRST: Check database - if GID already has an evaluation, skip processing entirely
-                            already_in_db = False
-                            if global_id is not None:
-                                existing_status = get_evaluation_status_by_gid(global_id)
-                                if existing_status is not None:
-                                    # Already evaluated in database, skip processing
-                                    already_in_db = True
+                            # Check if already processed - if yes, skip all interval/visibility checks
+                            already_processed = processed_identities[window_name].get(identity_key, False)
                             
-                            # SECOND: Check if already processed in this session
-                            if global_id is not None:
-                                # For GID: check across ALL cameras (global deduplication)
-                                already_processed = any(
-                                    processed_identities[cam_name].get(identity_key, False) 
-                                    for cam_name in processed_identities.keys()
-                                )
-                            else:
-                                # For TID: check only within this camera (per-camera deduplication)
-                                already_processed = processed_identities[window_name].get(identity_key, False)
-                            
-                            # Skip if already in database OR already processed in this session
-                            if already_in_db or already_processed:
-                                # Skip processing but continue to draw bounding box with existing status
-                                pass
-                            else:
+                            if not already_processed:
                                 # Initialize frame counter for this identity if not exists
                                 if identity_key not in identity_frame_counters[window_name]:
                                     identity_frame_counters[window_name][identity_key] = 0
@@ -553,8 +539,8 @@ def main() -> None:
                                 bbox_h = y2 - y1
                                 frame_h, frame_w = frame.shape[:2]
                                 is_visible = (
-                                    bbox_w >= args.cloth_min_size
-                                    and bbox_h >= args.cloth_min_size
+                                    bbox_w >= args.CLOTH_MIN_SIZE
+                                    and bbox_h >= args.CLOTH_MIN_SIZE
                                     and x1 >= int(frame_w * args.cloth_edge_margin)
                                     and y1 >= int(frame_h * args.cloth_edge_margin)
                                     and x2 <= int(frame_w * (1 - args.cloth_edge_margin))
@@ -586,15 +572,7 @@ def main() -> None:
                                                 global_id=global_id,
                                                 tracking_id=trk["track_id"],
                                             )
-                                            
-                                            # Mark as processed: for GID, mark in ALL cameras; for TID, mark only in current camera
-                                            if global_id is not None:
-                                                # Global deduplication: mark in all cameras
-                                                for cam_name in processed_identities.keys():
-                                                    processed_identities[cam_name][identity_key] = True
-                                            else:
-                                                # Per-camera deduplication: mark only in current camera
-                                                processed_identities[window_name][identity_key] = True
+                                            processed_identities[window_name][identity_key] = True
                                             
                                             # Set status color based on result
                                             if status == "Appropriate":
