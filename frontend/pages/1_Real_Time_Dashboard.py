@@ -2,7 +2,9 @@ import os
 import re
 import sys
 import time
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -97,6 +99,41 @@ def cached_load_model(model_path: str, device: str):
 def cached_load_shoe_model(model_path: str, device: str):
     """Cache shoe model loading."""
     return YOLO(model_path)
+
+
+@st.cache_data(show_spinner=False)
+def probe_cameras(max_index: int = 5) -> List[int]:
+    """
+    Detect available camera indices up to max_index.
+    Returns a list of indices that successfully open and read a frame.
+    """
+    available: List[int] = []
+    for idx in range(max(0, max_index) + 1):
+        cap = cv2.VideoCapture(idx)
+        ok, _ = cap.read()
+        cap.release()
+        if ok:
+            available.append(idx)
+    return available
+
+
+def persist_uploaded_videos(files: List) -> List[str]:
+    """
+    Persist uploaded video files to a temp folder and return their paths.
+    """
+    if not files:
+        return []
+    upload_dir = Path(BASE_DIR) / "data" / "uploaded_videos"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    saved_paths: List[str] = []
+    for f in files:
+        suffix = Path(f.name).suffix or ".mp4"
+        with tempfile.NamedTemporaryFile(
+            delete=False, dir=upload_dir, suffix=suffix
+        ) as tmp:
+            tmp.write(f.getbuffer())
+            saved_paths.append(tmp.name)
+    return saved_paths
 
 
 def build_mosaic(frames: List[np.ndarray]) -> np.ndarray:
@@ -202,11 +239,70 @@ def run_streaming_dashboard() -> None:
 
         default_device = "cuda" if has_cuda else "cpu"
 
-        sources_str = st.text_input(
-            "Sources (space-separated indices/paths)",
-            value="0",
-            help="Example: `0` or `0 1` or `footage/c0.avi footage/c1.avi`",
+        st.markdown("### Sources")
+        source_mode = st.radio(
+            "Choose source type",
+            options=["Camera", "Video"],
+            index=0,
+            horizontal=True,
+            help="Use cameras detected on this machine or upload/select video files.",
         )
+
+        # Camera mode: auto-detect and allow multi-select
+        camera_max_index = st.number_input(
+            "Max camera index to scan",
+            min_value=0,
+            max_value=20,
+            value=5,
+            step=1,
+        )
+        if "available_cameras" not in st.session_state:
+            st.session_state["available_cameras"] = probe_cameras(int(camera_max_index))
+            st.session_state["selected_cameras"] = [str(i) for i in st.session_state["available_cameras"]]
+
+        if st.button("🔄 Refresh camera list", help="Re-scan connected cameras"):
+            st.session_state["available_cameras"] = probe_cameras(int(camera_max_index))
+            st.session_state["selected_cameras"] = [str(i) for i in st.session_state["available_cameras"]]
+
+        available_cams = st.session_state.get("available_cameras", [])
+        camera_choices = [str(idx) for idx in available_cams]
+
+        # Auto-select all detected cameras; remember selection across reruns
+        selected_cameras = st.multiselect(
+            "Select camera(s)",
+            options=camera_choices,
+            default=st.session_state.get("selected_cameras", camera_choices),
+            help="Detected cameras you can stream from.",
+            disabled=source_mode != "Camera",
+        )
+        st.session_state["selected_cameras"] = selected_cameras
+
+        # Video mode: upload or type paths (supports multiple)
+        uploaded_videos = st.file_uploader(
+            "Upload video file(s)",
+            type=["mp4", "avi", "mov", "mkv"],
+            accept_multiple_files=True,
+            disabled=source_mode != "Video",
+        )
+        manual_video_paths = st.text_area(
+            "Or enter video file paths (one per line)",
+            value="",
+            placeholder="C:/data/video1.mp4\nfootage/c0.avi",
+            disabled=source_mode != "Video",
+            help="You can paste local/remote paths. One path per line.",
+        )
+
+        selected_sources: List[str] = []
+        if source_mode == "Camera":
+            selected_sources = selected_cameras
+            if not available_cams:
+                st.warning("No cameras detected. Try refreshing or increase max index.")
+        else:
+            uploaded_paths = persist_uploaded_videos(uploaded_videos) if uploaded_videos else []
+            manual_paths = [p.strip() for p in manual_video_paths.splitlines() if p.strip()]
+            selected_sources = uploaded_paths + manual_paths
+            if not selected_sources:
+                st.info("Upload a video or enter a file path to start monitoring.")
         
         # Detection model dropdown
         detection_models, detection_paths = get_model_options("detection")
@@ -462,9 +558,9 @@ def run_streaming_dashboard() -> None:
         return
 
     # Parse and open sources
-    raw_sources = sources_str.split()
+    raw_sources = selected_sources
     if not raw_sources:
-        st.error("Please provide at least one source.")
+        st.error("Please select at least one camera or video source.")
         return
 
     sources = parse_sources(raw_sources)
@@ -728,10 +824,27 @@ def run_streaming_dashboard() -> None:
                         if enable_cloth and clothing_model is not None and is_visible:
                             identity_key = f"GID_{global_id}" if global_id is not None else f"TID_{trk['track_id']}"
                             
-                            # Check if already processed - if yes, skip all interval/visibility checks
-                            already_processed = processed_identities[window_name].get(identity_key, False)
+                            # FIRST: Check database - if GID already has an evaluation, skip processing entirely
+                            already_in_db = False
+                            if global_id is not None:
+                                existing_status = get_evaluation_status_by_gid(global_id)
+                                if existing_status is not None:
+                                    # Already evaluated in database, skip processing
+                                    already_in_db = True
                             
-                            if not already_processed:
+                            # SECOND: Check if already processed in this session
+                            if global_id is not None:
+                                # For GID: check across ALL cameras (global deduplication)
+                                already_processed = any(
+                                    processed_identities[cam_name].get(identity_key, False) 
+                                    for cam_name in processed_identities.keys()
+                                )
+                            else:
+                                # For TID: check only within this camera (per-camera deduplication)
+                                already_processed = processed_identities[window_name].get(identity_key, False)
+                            
+                            # Skip if already in database OR already processed in this session
+                            if not (already_in_db or already_processed):
                                 # Initialize frame counter for this identity if not exists
                                 if identity_key not in identity_frame_counters[window_name]:
                                     identity_frame_counters[window_name][identity_key] = 0
@@ -760,6 +873,12 @@ def run_streaming_dashboard() -> None:
                                                 if numbers:
                                                     cam_idx = int(numbers[0]) + 1
                                             
+                                            # Check status BEFORE calling analyze_clothing_and_log
+                                            # to detect if a new evaluation was created
+                                            status_before = None
+                                            if global_id is not None:
+                                                status_before = get_evaluation_status_by_gid(global_id)
+                                            
                                             status, violation_desc, violation_type = analyze_clothing_and_log(
                                                 person_crop,
                                                 cam_idx=cam_idx,
@@ -770,8 +889,50 @@ def run_streaming_dashboard() -> None:
                                                 shoe_conf=shoe_conf,
                                             )
 
-                                            processed_identities[window_name][identity_key] = True
-                                            last_eval_time[window_name] = now
+                                            # Check if evaluation was actually saved to database
+                                            # If clothing_category was "Unknown", nothing was saved and we should allow retry
+                                            evaluation_saved = False
+                                            if global_id is not None:
+                                                # Check if status changed (new evaluation was created)
+                                                status_after = get_evaluation_status_by_gid(global_id)
+                                                # If status_before was None and status_after is not None, new evaluation was created
+                                                # If status_before was not None and status_after is different, new evaluation was created
+                                                # If status_before == status_after and both are not None, no new evaluation (already existed)
+                                                if status_before is None and status_after is not None:
+                                                    evaluation_saved = True  # New evaluation created
+                                                elif status_before is not None and status_after is not None and status_before != status_after:
+                                                    evaluation_saved = True  # New evaluation created (status changed)
+                                                elif status_before is not None and status_after == status_before:
+                                                    evaluation_saved = False  # No new evaluation (already existed)
+                                                else:
+                                                    # status_before is None and status_after is None - nothing was saved (Unknown case)
+                                                    evaluation_saved = False
+                                            else:
+                                                # For TID-only cases, we can't check database easily
+                                                # Use heuristic: if violation_desc and violation_type are both empty,
+                                                # it might be Unknown case, but non-violations also have empty desc/type
+                                                # To be safe, we'll check: if status is "Appropriate" and both are empty,
+                                                # it's likely Unknown (nothing saved). Otherwise assume saved.
+                                                if status == "Appropriate" and violation_desc == "" and violation_type == "":
+                                                    # Likely Unknown case - don't mark as processed to allow retry
+                                                    evaluation_saved = False
+                                                else:
+                                                    # Assume saved for TID-only to avoid infinite retries
+                                                    evaluation_saved = True
+                                            
+                                            # Only mark as processed if evaluation was saved to database
+                                            # This allows retry for "Unknown" cases where nothing was saved
+                                            if evaluation_saved:
+                                                # Mark as processed: for GID, mark in ALL cameras; for TID, mark only in current camera
+                                                if global_id is not None:
+                                                    # Global deduplication: mark in all cameras
+                                                    for cam_name in processed_identities.keys():
+                                                        processed_identities[cam_name][identity_key] = True
+                                                else:
+                                                    # Per-camera deduplication: mark only in current camera
+                                                    processed_identities[window_name][identity_key] = True
+                                                last_eval_time[window_name] = now
+                                            # If evaluation_saved is False, don't mark as processed - allows retry on next interval
                                             
                                             # Set status color
                                             if status == "Appropriate":

@@ -199,6 +199,13 @@ def analyze_clothing_and_log(
     else:
         clothing_category = ", ".join(eval_labels)
 
+    # Skip saving to database if clothing_category is "Unknown"
+    if clothing_category == "Unknown":
+        # Return status without saving to database
+        violation_desc = ""
+        violation_type = ""
+        return status, violation_desc, violation_type
+
     # Incremental IDs based on existing records in MongoDB
     eval_id, cloth_id = get_next_evaluation_and_cloth_ids()
     details = "..." if is_violation else "-"

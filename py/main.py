@@ -513,10 +513,30 @@ def main() -> None:
                         if args.cloth_detect and clothing_model is not None:
                             identity_key = f"GID_{global_id}" if global_id is not None else f"TID_{trk['track_id']}"
                             
-                            # Check if already processed - if yes, skip all interval/visibility checks
-                            already_processed = processed_identities[window_name].get(identity_key, False)
+                            # FIRST: Check database - if GID already has an evaluation, skip processing entirely
+                            already_in_db = False
+                            if global_id is not None:
+                                existing_status = get_evaluation_status_by_gid(global_id)
+                                if existing_status is not None:
+                                    # Already evaluated in database, skip processing
+                                    already_in_db = True
                             
-                            if not already_processed:
+                            # SECOND: Check if already processed in this session
+                            if global_id is not None:
+                                # For GID: check across ALL cameras (global deduplication)
+                                already_processed = any(
+                                    processed_identities[cam_name].get(identity_key, False) 
+                                    for cam_name in processed_identities.keys()
+                                )
+                            else:
+                                # For TID: check only within this camera (per-camera deduplication)
+                                already_processed = processed_identities[window_name].get(identity_key, False)
+                            
+                            # Skip if already in database OR already processed in this session
+                            if already_in_db or already_processed:
+                                # Skip processing but continue to draw bounding box with existing status
+                                pass
+                            else:
                                 # Initialize frame counter for this identity if not exists
                                 if identity_key not in identity_frame_counters[window_name]:
                                     identity_frame_counters[window_name][identity_key] = 0
@@ -566,7 +586,15 @@ def main() -> None:
                                                 global_id=global_id,
                                                 tracking_id=trk["track_id"],
                                             )
-                                            processed_identities[window_name][identity_key] = True
+                                            
+                                            # Mark as processed: for GID, mark in ALL cameras; for TID, mark only in current camera
+                                            if global_id is not None:
+                                                # Global deduplication: mark in all cameras
+                                                for cam_name in processed_identities.keys():
+                                                    processed_identities[cam_name][identity_key] = True
+                                            else:
+                                                # Per-camera deduplication: mark only in current camera
+                                                processed_identities[window_name][identity_key] = True
                                             
                                             # Set status color based on result
                                             if status == "Appropriate":
