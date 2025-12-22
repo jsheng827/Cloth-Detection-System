@@ -4,7 +4,11 @@ Centralizes all thresholds and parameters for consistency across modules.
 """
 
 # Shoe Detection Configuration
-SHOE_CONFIDENCE_THRESHOLD = 0.25  # Confidence required to consider a shoe detection
+SHOE_CONFIDENCE_THRESHOLD = 0.15  # Confidence required to consider a shoe detection (lowered for better detection)
+SHOE_ROI_START_RATIO = 0.4  # Start ROI from 40% of person height (use bottom 60% for shoes)
+SHOE_ROI_MIN_HEIGHT = 50  # Minimum ROI height in pixels
+SHOE_ROI_MIN_WIDTH = 50  # Minimum ROI width in pixels
+SHOE_RESIZE_TARGET = 800  # Target resize size for shoe detection (larger for better detail)
 
 # Clothing Detection Configuration
 CLOTH_CONFIDENCE_THRESHOLD = 0.50  # Confidence threshold for clothing detection model

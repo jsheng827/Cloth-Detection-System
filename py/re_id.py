@@ -13,6 +13,8 @@ try:
 except Exception:
     torchreid_models = None
 
+from config import REID_THRESHOLD
+
 __all__ = ["OsNetReID", "init_reid", "PersonReIDManager"]
 
 
@@ -113,7 +115,7 @@ class PersonReIDManager:
 
     def __init__(
         self, 
-        similarity_threshold: float = 0.7, 
+        similarity_threshold: float = REID_THRESHOLD, 
         max_features_per_id: int = 50,
         initial_global_id: Optional[int] = None
     ) -> None:

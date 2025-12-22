@@ -9,6 +9,12 @@ from filterpy.kalman import KalmanFilter
 from scipy.optimize import linear_sum_assignment
 
 from re_id import OsNetReID
+from config import (
+    TRACK_MAX_AGE,
+    TRACK_MIN_HITS,
+    TRACK_IOU_THRESHOLD,
+    SIMILARITY_LAMBDA,
+)
 
 
 def _xyxy_to_xyah(bbox: np.ndarray) -> np.ndarray:
@@ -123,10 +129,10 @@ class DeepOCSort:
     def __init__(
         self,
         reid_extractor: Optional[OsNetReID] = None,
-        max_age: int = 30,
-        min_hits: int = 3,
-        iou_threshold: float = 0.3,
-        similarity_lambda: float = 0.5,
+        max_age: int = TRACK_MAX_AGE,
+        min_hits: int = TRACK_MIN_HITS,
+        iou_threshold: float = TRACK_IOU_THRESHOLD,
+        similarity_lambda: float = SIMILARITY_LAMBDA,
     ) -> None:
         self.reid_extractor = reid_extractor
         self.max_age = max_age
@@ -270,10 +276,10 @@ class DeepOCSort:
 
 def init_tracker(
     reid_extractor: Optional[OsNetReID] = None,
-    max_age: int = 30,
-    min_hits: int = 3,
-    iou_threshold: float = 0.3,
-    similarity_lambda: float = 0.5,
+    max_age: int = TRACK_MAX_AGE,
+    min_hits: int = TRACK_MIN_HITS,
+    iou_threshold: float = TRACK_IOU_THRESHOLD,
+    similarity_lambda: float = SIMILARITY_LAMBDA,
 ) -> DeepOCSort:
     """Factory helper for Deep OC-SORT tracker."""
     return DeepOCSort(

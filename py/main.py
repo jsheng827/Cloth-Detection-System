@@ -45,6 +45,15 @@ from config import (
     CLOTH_INTERVAL,
     CLOTH_MAX_RETRIES,
     CLOTH_MIN_SIZE,
+    DETECTION_CONFIDENCE,
+    DETECTION_IMAGE_SIZE,
+    TRACK_MAX_AGE,
+    TRACK_MIN_HITS,
+    TRACK_IOU_THRESHOLD,
+    SIMILARITY_LAMBDA,
+    REID_THRESHOLD,
+    REID_INTERVAL,
+    SHOE_CONFIDENCE_THRESHOLD,
 )
 from typing import Optional
 
@@ -117,13 +126,13 @@ def main() -> None:
     parser.add_argument(
         "--conf",
         type=float,
-        default=0.75,
+        default=DETECTION_CONFIDENCE,
         help="Confidence threshold for detections",
     )
     parser.add_argument(
         "--imgsz",
         type=int,
-        default=640,
+        default=DETECTION_IMAGE_SIZE,
         help="Inference image size (square). Typical values: 640, 736, 960",
     )
     parser.add_argument(
@@ -175,37 +184,37 @@ def main() -> None:
     parser.add_argument(
         "--max-age",
         type=int,
-        default=30,
+        default=TRACK_MAX_AGE,
         help="Maximum frames to keep lost tracks alive (Deep OC-SORT)",
     )
     parser.add_argument(
         "--min-hits",
         type=int,
-        default=3,
+        default=TRACK_MIN_HITS,
         help="Minimum consecutive hits before reporting a track",
     )
     parser.add_argument(
         "--track-iou",
         type=float,
-        default=0.3,
+        default=TRACK_IOU_THRESHOLD,
         help="IoU threshold used for association in Deep OC-SORT",
     )
     parser.add_argument(
         "--similarity-lambda",
         type=float,
-        default=0.5,
+        default=SIMILARITY_LAMBDA,
         help="Blend factor between IoU and Re-ID similarity (0-1). Higher favors IoU.",
     )
     parser.add_argument(
         "--reid-threshold",
         type=float,
-        default=0.7,
+        default=REID_THRESHOLD,
         help="Cosine similarity threshold for assigning the same Global ID across cameras.",
     )
     parser.add_argument(
         "--reid-interval",
         type=int,
-        default=10,
+        default=REID_INTERVAL,
         help="Run Re-ID every N frames per camera (default: 10).",
     )
     parser.add_argument(
@@ -342,8 +351,10 @@ def main() -> None:
         if args.cloth_detect:
             try:
                 clothing_model = YOLO(args.cloth_model)
+                print(f"[Cloth] Loaded clothing model: {args.cloth_model}", file=sys.stderr)
                 if os.path.exists(args.shoe_model):
                     shoe_model = YOLO(args.shoe_model)
+                    print(f"[Shoe] Loaded shoe model: {args.shoe_model}", file=sys.stderr)
                 else:
                     print(f"Warning: Shoe model not found at {args.shoe_model}. Shoe detection will be disabled.", file=sys.stderr)
             except Exception as e:
@@ -571,6 +582,7 @@ def main() -> None:
                                                 shoe_model=shoe_model,
                                                 global_id=global_id,
                                                 tracking_id=trk["track_id"],
+                                                shoe_conf=SHOE_CONFIDENCE_THRESHOLD,
                                             )
                                             processed_identities[window_name][identity_key] = True
                                             
