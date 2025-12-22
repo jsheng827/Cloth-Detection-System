@@ -117,20 +117,30 @@ class PersonReIDManager:
         self, 
         similarity_threshold: float = REID_THRESHOLD, 
         max_features_per_id: int = 50,
-        initial_global_id: Optional[int] = None
+        initial_global_id: Optional[int] = None,
+        cleanup_interval: int = 300,
+        max_age_multiplier: int = 10
     ) -> None:
         self.similarity_threshold = similarity_threshold
         self.max_features_per_id = max_features_per_id
         self.gallery: Dict[int, List[np.ndarray]] = {}
         self.track_to_global: Dict[str, Dict[int, int]] = {}
+        # Track last access frame for each Global ID (for cleanup)
+        self.last_access_frame: Dict[int, int] = {}
         # Start from initial_global_id + 1 if provided, otherwise start from 1
         self.next_global_id = (initial_global_id + 1) if initial_global_id is not None else 1
+        # Cleanup configuration
+        self.cleanup_interval = cleanup_interval  # Cleanup every N frames
+        self.max_age_multiplier = max_age_multiplier  # Multiply max_age by this for cleanup threshold
+        self.frame_count = 0  # Global frame counter
 
     def _register_feature(self, global_id: int, feature: np.ndarray) -> None:
         feats = self.gallery.setdefault(global_id, [])
         feats.append(feature)
         if len(feats) > self.max_features_per_id:
             feats.pop(0)
+        # Update last access frame for this Global ID
+        self.last_access_frame[global_id] = self.frame_count
 
     def assign_global_id(
         self,
@@ -141,9 +151,12 @@ class PersonReIDManager:
         if feature is None or np.linalg.norm(feature) == 0:
             global_id = self.track_to_global.get(camera_name, {}).get(local_track_id)
             if global_id is not None:
+                # Update last access even when no feature is provided
+                self.last_access_frame[global_id] = self.frame_count
                 return global_id
             global_id = self.next_global_id
             self.next_global_id += 1
+            self.last_access_frame[global_id] = self.frame_count
             return global_id
 
         best_gid = None
@@ -167,7 +180,78 @@ class PersonReIDManager:
         return best_gid
 
     def get_existing_global_id(self, camera_name: str, local_track_id: int) -> Optional[int]:
-        return self.track_to_global.get(camera_name, {}).get(local_track_id)
+        global_id = self.track_to_global.get(camera_name, {}).get(local_track_id)
+        if global_id is not None:
+            # Update last access when retrieving existing Global ID
+            self.last_access_frame[global_id] = self.frame_count
+        return global_id
+
+    def cleanup_inactive_gids(self, max_age: int, active_global_ids: Optional[set] = None) -> int:
+        """
+        Remove Global IDs from gallery that haven't been accessed recently.
+        
+        Args:
+            max_age: Maximum age in frames (from tracker) - IDs older than 
+                     max_age * max_age_multiplier will be removed
+            active_global_ids: Set of Global IDs that are currently active in tracks.
+                              If provided, these will never be removed.
+        
+        Returns:
+            Number of Global IDs removed
+        """
+        if not self.gallery:
+            return 0
+        
+        cleanup_threshold = max_age * self.max_age_multiplier
+        threshold_frame = self.frame_count - cleanup_threshold
+        
+        # Build set of active GIDs if not provided
+        if active_global_ids is None:
+            # Flatten nested dictionary structure to get all active Global IDs
+            active_global_ids = {
+                gid for camera_dict in self.track_to_global.values() 
+                for gid in camera_dict.values()
+            }
+        
+        removed_count = 0
+        gids_to_remove = []
+        
+        for gid in list(self.gallery.keys()):
+            # Never remove active Global IDs
+            if gid in active_global_ids:
+                continue
+            
+            # Check if Global ID hasn't been accessed recently
+            last_access = self.last_access_frame.get(gid, 0)
+            if last_access < threshold_frame:
+                gids_to_remove.append(gid)
+        
+        # Remove inactive Global IDs
+        for gid in gids_to_remove:
+            if gid in self.gallery:
+                del self.gallery[gid]
+            if gid in self.last_access_frame:
+                del self.last_access_frame[gid]
+            removed_count += 1
+        
+        # Also clean up track_to_global mappings for removed GIDs
+        for camera_name in list(self.track_to_global.keys()):
+            camera_dict = self.track_to_global[camera_name]
+            tracks_to_remove = [
+                tid for tid, gid in camera_dict.items() 
+                if gid in gids_to_remove
+            ]
+            for tid in tracks_to_remove:
+                del camera_dict[tid]
+            # Remove camera entry if empty
+            if not camera_dict:
+                del self.track_to_global[camera_name]
+        
+        return removed_count
+
+    def increment_frame_count(self) -> None:
+        """Increment the global frame counter. Call this once per frame."""
+        self.frame_count += 1
 
     def reset_camera(self, camera_name: str) -> None:
         if camera_name in self.track_to_global:

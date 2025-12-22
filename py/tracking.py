@@ -129,10 +129,10 @@ class DeepOCSort:
     def __init__(
         self,
         reid_extractor: Optional[OsNetReID] = None,
-        max_age: int = TRACK_MAX_AGE,
-        min_hits: int = TRACK_MIN_HITS,
-        iou_threshold: float = TRACK_IOU_THRESHOLD,
-        similarity_lambda: float = SIMILARITY_LAMBDA,
+        max_age: int = 10,
+        min_hits: int = 3,
+        iou_threshold: float = 0.3,
+        similarity_lambda: float = 0.5,
     ) -> None:
         self.reid_extractor = reid_extractor
         self.max_age = max_age
@@ -276,10 +276,10 @@ class DeepOCSort:
 
 def init_tracker(
     reid_extractor: Optional[OsNetReID] = None,
-    max_age: int = TRACK_MAX_AGE,
-    min_hits: int = TRACK_MIN_HITS,
-    iou_threshold: float = TRACK_IOU_THRESHOLD,
-    similarity_lambda: float = SIMILARITY_LAMBDA,
+    max_age: int = 10,
+    min_hits: int = 3,
+    iou_threshold: float = 0.3,
+    similarity_lambda: float = 0.5,
 ) -> DeepOCSort:
     """Factory helper for Deep OC-SORT tracker."""
     return DeepOCSort(

@@ -184,7 +184,7 @@ def main() -> None:
     parser.add_argument(
         "--max-age",
         type=int,
-        default=TRACK_MAX_AGE,
+        default=10,
         help="Maximum frames to keep lost tracks alive (Deep OC-SORT)",
     )
     parser.add_argument(
@@ -392,9 +392,17 @@ def main() -> None:
                 if args.reid:
                     reid_frame_counters[window_name] = 0
 
+        # Frame counter for Re-ID cleanup
+        frame_counter = 0
+        
         while True:
             frames: List = []
             owners: List[str] = []
+            
+            # Increment frame counter for Re-ID cleanup
+            if args.reid and reid_manager:
+                reid_manager.increment_frame_count()
+                frame_counter += 1
 
             for window_name, cap in caps:
                 ok, frame = cap.read()
@@ -687,6 +695,15 @@ def main() -> None:
                     )
 
                 display_frames.append(frame_to_show)
+            
+            # Periodic cleanup of inactive Re-ID Global IDs
+            if args.reid and reid_manager and frame_counter % reid_manager.cleanup_interval == 0:
+                removed_count = reid_manager.cleanup_inactive_gids(
+                    max_age=args.max_age,
+                    active_global_ids=None  # Will be built from track_to_global internally
+                )
+                if removed_count > 0:
+                    print(f"[ReID] Cleaned up {removed_count} inactive Global ID(s) from gallery")
 
             if display_frames:
                 mosaic = build_mosaic(display_frames)
