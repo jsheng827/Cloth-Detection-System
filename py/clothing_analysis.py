@@ -12,10 +12,7 @@ from ultralytics import YOLO
 from config import (
     SHOE_CONFIDENCE_THRESHOLD,
     CLOTH_CONFIDENCE_THRESHOLD,
-    CLOTHING_KEYWORDS,
     SHOE_KEYWORDS,
-    MAX_CLOTHING_ITEMS,
-    MAX_SHOE_ITEMS,
     TOP_KEYWORDS,
     BOTTOM_KEYWORDS,
     DRESS_KEYWORDS,
@@ -33,28 +30,44 @@ def categorize_clothing(label: str) -> Optional[str]:
     """
     Categorize a clothing label into TOP, BOTTOM, or DRESS.
     
+    IMPORTANT:
+    - Ensure that plain tops like "vest" are NOT treated as dresses like "vest_dress".
+    - A dress must match the full dress keyword, not just share a substring.
+    
     Args:
         label: Clothing label to categorize
         
     Returns:
         "TOP", "BOTTOM", "DRESS", or None if not a clothing item
     """
-    label_lower = label.lower()
+    label_lower = label.lower().strip()
     
     # Check for dress first (dress keywords are more specific)
+    # Only consider it a dress when the full dress keyword appears in the label
+    # or the label exactly matches a dress keyword.
+    # Example:
+    #   - "vest_dress"  -> DRESS  (matches "vest_dress")
+    #   - "red_vest_dress" -> DRESS  (contains "vest_dress")
+    #   - "vest"       -> TOP (should NOT be DRESS)
     for dress_kw in DRESS_KEYWORDS:
-        if dress_kw.lower() in label_lower or label_lower in dress_kw.lower():
+        dress_kw_lower = dress_kw.lower()
+        if label_lower == dress_kw_lower or dress_kw_lower in label_lower:
             return "DRESS"
     
-    # Check for top
-    for top_kw in TOP_KEYWORDS:
-        if top_kw.lower() in label_lower or label_lower in top_kw.lower():
-            return "TOP"
+    # Check for top (but exclude labels that clearly reference a dress)
+    # This avoids classifying "vest_dress" as TOP.
+    if "dress" not in label_lower:
+        for top_kw in TOP_KEYWORDS:
+            top_kw_lower = top_kw.lower()
+            if label_lower == top_kw_lower or top_kw_lower in label_lower:
+                return "TOP"
     
-    # Check for bottom
-    for bottom_kw in BOTTOM_KEYWORDS:
-        if bottom_kw.lower() in label_lower or label_lower in bottom_kw.lower():
-            return "BOTTOM"
+    # Check for bottom (also exclude obvious dress labels)
+    if "dress" not in label_lower:
+        for bottom_kw in BOTTOM_KEYWORDS:
+            bottom_kw_lower = bottom_kw.lower()
+            if label_lower == bottom_kw_lower or bottom_kw_lower in label_lower:
+                return "BOTTOM"
     
     return None
 
