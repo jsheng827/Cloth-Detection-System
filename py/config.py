@@ -15,7 +15,7 @@ CLOTH_MAX_RETRIES = 3  # Maximum retry attempts for failed detections
 
 # Re-Identification Configuration
 REID_THRESHOLD = 0.7  # Cosine similarity threshold for matching across cameras
-REID_INTERVAL = 10  # Run Re-ID every N frames per camera
+REID_INTERVAL = 30  # Run Re-ID every N frames per camera
 
 # Tracking Configuration
 TRACK_MAX_AGE = 10  # Maximum frames to keep lost tracks alive
