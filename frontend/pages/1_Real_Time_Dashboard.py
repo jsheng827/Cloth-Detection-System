@@ -277,19 +277,12 @@ def run_streaming_dashboard() -> None:
         )
         st.session_state["selected_cameras"] = selected_cameras
 
-        # Video mode: upload or type paths (supports multiple)
+        # Video mode: upload files (supports multiple)
         uploaded_videos = st.file_uploader(
             "Upload video file(s)",
             type=["mp4", "avi", "mov", "mkv"],
             accept_multiple_files=True,
             disabled=source_mode != "Video",
-        )
-        manual_video_paths = st.text_area(
-            "Or enter video file paths (one per line)",
-            value="",
-            placeholder="C:/data/video1.mp4\nfootage/c0.avi",
-            disabled=source_mode != "Video",
-            help="You can paste local/remote paths. One path per line.",
         )
 
         selected_sources: List[str] = []
@@ -299,10 +292,9 @@ def run_streaming_dashboard() -> None:
                 st.warning("No cameras detected. Try refreshing or increase max index.")
         else:
             uploaded_paths = persist_uploaded_videos(uploaded_videos) if uploaded_videos else []
-            manual_paths = [p.strip() for p in manual_video_paths.splitlines() if p.strip()]
-            selected_sources = uploaded_paths + manual_paths
+            selected_sources = uploaded_paths
             if not selected_sources:
-                st.info("Upload a video or enter a file path to start monitoring.")
+                st.info("Upload a video file to start monitoring.")
         
         # Detection model dropdown
         detection_models, detection_paths = get_model_options("detection")
@@ -469,7 +461,7 @@ def run_streaming_dashboard() -> None:
             help="Maximum retries for failed detections",
             disabled=not enable_cloth,
         )
-        max_age = st.number_input("Tracker max age", min_value=1, max_value=120, value=30)
+        max_age = st.number_input("Tracker max age", min_value=1, max_value=120, value=10)
         min_hits = st.number_input("Tracker min hits", min_value=1, max_value=10, value=3)
         track_iou = st.slider("Tracker IoU threshold", 0.05, 0.9, 0.3, 0.05)
         similarity_lambda = st.slider(
@@ -682,10 +674,19 @@ def run_streaming_dashboard() -> None:
             reid_manager.similarity_threshold = reid_threshold
 
     try:
+        # Initialize frame counter for Re-ID cleanup
+        if "reid_frame_counter" not in st.session_state:
+            st.session_state["reid_frame_counter"] = 0
+        
         while st.session_state.get("run_streams", False):
             frames: List[np.ndarray] = []
             owners: List[str] = []
             tracker_latency_ms = 0.0
+            
+            # Increment frame counter for Re-ID cleanup
+            if enable_reid and reid_manager:
+                reid_manager.increment_frame_count()
+                st.session_state["reid_frame_counter"] += 1
 
             for window_name, cap in caps:
                 ok, frame = cap.read()
@@ -1011,6 +1012,17 @@ def run_streaming_dashboard() -> None:
                 )
 
                 display_frames.append(frame_to_show)
+            
+            # Periodic cleanup of inactive Re-ID Global IDs
+            if enable_reid and reid_manager and st.session_state["reid_frame_counter"] % reid_manager.cleanup_interval == 0:
+                removed_count = reid_manager.cleanup_inactive_gids(
+                    max_age=int(max_age),
+                    active_global_ids=None  # Will be built from track_to_global internally
+                )
+                if removed_count > 0:
+                    st.session_state.get("reid_cleanup_log", []).append(
+                        f"Cleaned up {removed_count} inactive Global ID(s)"
+                    )
 
             if display_frames:
                 mosaic = build_mosaic(display_frames)

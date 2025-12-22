@@ -123,7 +123,7 @@ class DeepOCSort:
     def __init__(
         self,
         reid_extractor: Optional[OsNetReID] = None,
-        max_age: int = 30,
+        max_age: int = 10,
         min_hits: int = 3,
         iou_threshold: float = 0.3,
         similarity_lambda: float = 0.5,
@@ -270,7 +270,7 @@ class DeepOCSort:
 
 def init_tracker(
     reid_extractor: Optional[OsNetReID] = None,
-    max_age: int = 30,
+    max_age: int = 10,
     min_hits: int = 3,
     iou_threshold: float = 0.3,
     similarity_lambda: float = 0.5,
