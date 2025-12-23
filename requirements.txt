@@ -1,8 +1,14 @@
-#Important!!! torchreid only support by python 3.10, above version is not support and may cause error
+# =============================================================================
+# IMPORTANT: Python Version Requirement
+# =============================================================================
+# This project REQUIRES Python 3.10
+# torchreid only supports Python 3.10 and below.
+# Python 3.11+ is NOT supported and will cause installation/execution errors.
+# =============================================================================
 
 # Core Dependencies
-opencv-python>=4.8.0
-numpy>=1.24.0
+opencv-python>=4.8.0,<5.0.0
+numpy>=1.24.0,<2.0.0
 
 # Deep Learning Framework
 torch>=2.0.0
@@ -12,23 +18,30 @@ torchvision>=0.15.0
 ultralytics>=8.0.0
 
 # Person Re-Identification
+# NOTE: torchreid requires Python 3.10 or below
 torchreid
 
 # Tracking Algorithms
 filterpy>=1.4.5
-scipy>=1.10.0
+scipy>=1.10.0,<2.0.0
 
 # Database
-pymongo>=4.5.0
+pymongo>=4.5.0,<5.0.0
 
 # Web Dashboard
 streamlit>=1.28.0
-pandas>=2.0.0
+pandas>=2.0.0,<3.0.0
 
 # Optional: For better performance with CUDA
 # Uncomment and install separately if you have NVIDIA GPU
 # Note: Install PyTorch with CUDA from the official PyTorch website:
 # https://pytorch.org/get-started/locally/
-# Example for CUDA 12.9:
-# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu129
-
+# 
+# For CUDA 11.8:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+#
+# For CUDA 12.1:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+#
+# For CUDA 12.4:
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124

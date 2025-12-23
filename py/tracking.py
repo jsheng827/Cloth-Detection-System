@@ -211,10 +211,6 @@ class DeepOCSort:
     ) -> List[Dict]:
         """
         Update tracker state.
-
-        Args:
-            detections: list of dicts with keys {"bbox": np.ndarray, "score": float, "embedding": Optional[np.ndarray]}
-            frame: current RGB/BGR frame used for extracting embeddings if not provided.
         """
         self._prepare_embeddings(detections, frame)
 
