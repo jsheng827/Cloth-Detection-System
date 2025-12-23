@@ -37,9 +37,6 @@ TOP_KEYWORDS = [
     "long_sleeve_outwear",
     "vest",
     "sling",
-    "crop_top",
-    "tank_top",
-    "sleeveless",
 ]
 BOTTOM_KEYWORDS = [
     "shorts",

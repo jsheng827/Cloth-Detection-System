@@ -19,8 +19,6 @@ SETTINGS_DIR.mkdir(exist_ok=True)
 DEFAULT_VIOLATION_TYPES = [
     "shorts",
     "skirt",
-    "flipflops",
-    "sandals",
     "vest",
     "sling_dress",
     "sling",
@@ -45,13 +43,6 @@ ALL_AVAILABLE_ITEMS = [
     "long_sleeve_dress",
     "vest_dress",
     "sling_dress",
-    # Footwear
-    "sandals",
-    "flipflops",
-    "sneakers",
-    "boots",
-    "loafers",
-    "heels",
 ]
 
 

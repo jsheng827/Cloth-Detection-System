@@ -2,11 +2,8 @@
   "violation_types": [
     "shorts",
     "skirt",
-    "flipflops",
-    "sandals",
     "vest",
     "sling_dress",
-    "sling",
-    "vest_dress"
+    "sling"
   ]
 }
