@@ -43,7 +43,6 @@ from config import (
     CLOTH_CONFIDENCE_THRESHOLD,
     CLOTH_EDGE_MARGIN,
     CLOTH_INTERVAL,
-    CLOTH_MAX_RETRIES,
     CLOTH_MIN_SIZE,
 )
 from typing import Optional
@@ -92,12 +91,7 @@ def main() -> None:
 
     default_device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    parser.add_argument(
-        "--sources",
-        nargs="+",
-        default=["0"],
-        help="List of camera indices, file paths, or RTSP/HTTP streams (default: 0)",
-    )
+   
     parser.add_argument(
         "--probe",
         action="store_true",
@@ -108,6 +102,13 @@ def main() -> None:
         type=int,
         default=5,
         help="Maximum camera index to probe (used with --probe)",
+    )
+
+    parser.add_argument(
+        "--sources",
+        nargs="+",
+        default=["0"],
+        help="List of camera indices, file paths, or RTSP/HTTP streams (default: 0)",
     )
     parser.add_argument(
         "--model",
@@ -125,6 +126,12 @@ def main() -> None:
         type=int,
         default=640,
         help="Inference image size (square). Typical values: 640, 736, 960",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=default_device,
+        help="Computation device for inference (e.g., cpu, cuda, cuda:0). Default uses GPU if available.",
     )
     parser.add_argument(
         "--show-fps",
@@ -165,12 +172,6 @@ def main() -> None:
         type=str,
         default="./model/clothing_detection.pt",
         help="Path to cloth detection YOLO checkpoint (default: ./model/clothing_detection.pt)",
-    )
-    parser.add_argument(
-        "--shoe-model",
-        type=str,
-        default="./model/Shoebest.pt",
-        help="Path to shoe detection YOLO checkpoint (default: ./model/Shoebest.pt)",
     )
     parser.add_argument(
         "--max-age",
@@ -231,18 +232,6 @@ def main() -> None:
         type=float,
         default=CLOTH_EDGE_MARGIN,
         help="Edge margin as fraction of frame dimension (default: 0.03 = 3%%).",
-    )
-    parser.add_argument(
-        "--cloth-max-retries",
-        type=int,
-        default=CLOTH_MAX_RETRIES,
-        help="Maximum retry attempts for failed cloth detections (default: 3).",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default=default_device,
-        help="Computation device for inference (e.g., cpu, cuda, cuda:0). Default uses GPU if available.",
     )
     parser.add_argument(
         "--amp",
@@ -338,16 +327,11 @@ def main() -> None:
         
         # Cloth detection models (MongoDB integration)
         clothing_model: Optional[YOLO] = None
-        shoe_model: Optional[YOLO] = None
         if args.cloth_detect:
             try:
                 clothing_model = YOLO(args.cloth_model)
-                if os.path.exists(args.shoe_model):
-                    shoe_model = YOLO(args.shoe_model)
-                else:
-                    print(f"Warning: Shoe model not found at {args.shoe_model}. Shoe detection will be disabled.", file=sys.stderr)
             except Exception as e:
-                print(f"Failed to initialize cloth/shoe detection models: {e}", file=sys.stderr)
+                print(f"Failed to initialize cloth detection model: {e}", file=sys.stderr)
                 sys.exit(5)
         
         # Track processed identities and frame counters for cloth detection
@@ -384,6 +368,7 @@ def main() -> None:
         # Frame counter for Re-ID cleanup
         frame_counter = 0
         
+    
         while True:
             frames: List = []
             owners: List[str] = []
@@ -576,7 +561,6 @@ def main() -> None:
                                                 person_crop,
                                                 cam_idx=cam_idx,
                                                 clothing_model=clothing_model,
-                                                shoe_model=shoe_model,
                                                 global_id=global_id,
                                                 tracking_id=trk["track_id"],
                                             )

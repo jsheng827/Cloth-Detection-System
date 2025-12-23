@@ -67,10 +67,6 @@ def load_model(model_identifier: str, device: Optional[str] = None) -> YOLO:
     """
     Load a detection model. Accepts either a local path to a .pt file or a known YOLO model name.
 
-    Examples:
-    - "./model/yolov8m.pt" (local file in model folder)
-    - "yolov8m" or "yolo11m" (Ultralytics hub names)
-
     device: Optional device string like "cpu" or "cuda:0". If None, Ultralytics picks automatically.
     """
     identifier = model_identifier

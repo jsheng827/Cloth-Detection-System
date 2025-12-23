@@ -45,7 +45,6 @@ def save_evaluation(
     clothing_detection_id,
     clothing_category,
     status,
-    details="-",
     global_id=None,
     tracking_id=None,
 ):
@@ -55,7 +54,6 @@ def save_evaluation(
         "clothing_category": clothing_category,
         "status": status,
         "datetime": datetime.now().isoformat(),
-        "details": details or "-",
     }
     
     # Add GID and TID if provided

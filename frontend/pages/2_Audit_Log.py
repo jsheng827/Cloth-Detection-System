@@ -67,7 +67,7 @@ for doc in cursor:
     eval_id = doc.get("evaluation_id") or str(doc.get("_id"))
     violation = violations.find_one({"evaluation_id": eval_id})
     has_violation = bool(violation)
-    detail_cell = "..." if has_violation else (doc.get("details") or "-")
+    detail_cell = "..." if has_violation else "-"
     records.append(
         {
             "Evaluation ID": eval_id,

@@ -52,7 +52,6 @@ from db import (  # type: ignore
     get_latest_global_id,
 )
 from clothing_analysis import analyze_clothing_and_log  # type: ignore
-from config import SHOE_CONFIDENCE_THRESHOLD  # type: ignore
 
 
 def get_model_options(model_type: str) -> Tuple[List[str], List[str]]:
@@ -76,7 +75,7 @@ def get_default_model_path(model_type: str, default_path: str) -> str:
     Get default model path, checking if it exists in uploaded models first.
     
     Args:
-        model_type: Type of model (detection, reid, cloth, shoe)
+        model_type: Type of model (detection, reid, cloth)
         default_path: Default path to use if no models uploaded
     
     Returns:
@@ -93,12 +92,6 @@ def get_default_model_path(model_type: str, default_path: str) -> str:
 def cached_load_model(model_path: str, device: str):
     """Cache model loading to avoid reloading on every Streamlit rerun."""
     return load_model(model_path, device=device)
-
-
-@st.cache_resource
-def cached_load_shoe_model(model_path: str, device: str):
-    """Cache shoe model loading."""
-    return YOLO(model_path)
 
 
 @st.cache_data(show_spinner=False)
@@ -365,7 +358,6 @@ def run_streaming_dashboard() -> None:
         )
         enable_cloth = False
         cloth_model_path = "./model/bestclothingmodel.pt"  # Default initialization
-        shoe_model_path = "./model/shoelast.pt"  # Default initialization
         if enable_tracking:
             enable_cloth = st.checkbox(
                 "Enable Cloth Detection (YOLO bestclothinmodel.pt, logs clothing attributes)", value=True
@@ -394,28 +386,6 @@ def run_streaming_dashboard() -> None:
                     disabled=not enable_cloth,
                     help="Or upload a model in Settings page",
                 )
-            
-            # Shoe model dropdown
-            shoe_models, shoe_paths = get_model_options("shoe")
-            if shoe_models:
-                default_shoe_path = get_default_model_path("shoe", "./model/Shoebest.pt")
-                default_idx = shoe_paths.index(default_shoe_path) if default_shoe_path in shoe_paths else 0
-                selected_shoe = st.selectbox(
-                    "Shoe Detection Model",
-                    options=shoe_models,
-                    index=default_idx,
-                    help="Select a shoe detection model uploaded in Settings",
-                    disabled=not enable_cloth,
-                )
-                shoe_model_path = get_model_path(selected_shoe, "shoe") or "./model/shoelast.pt"
-            else:
-                st.info("💡 No shoe models uploaded. Go to Settings to upload models.")
-                shoe_model_path = st.text_input(
-                    "Shoe detection model path",
-                    value="./model/shoelast.pt",
-                    disabled=not enable_cloth,
-                    help="Path to shoe detection model (shoelast.pt). Or upload a model in Settings page",
-                )
         cloth_conf = st.slider(
             "Cloth detection confidence",
             0.1,
@@ -423,15 +393,6 @@ def run_streaming_dashboard() -> None:
             0.35,
             0.05,
             disabled=not enable_cloth,
-        )
-
-        shoe_conf = st.slider(
-        "Shoe detection confidence",
-        0.1,
-        1.0,
-        SHOE_CONFIDENCE_THRESHOLD,
-        0.05,
-        disabled=not enable_cloth,
         )
 
         # Cloth detection interval is set to 1 (process immediately on first detection)
@@ -451,14 +412,6 @@ def run_streaming_dashboard() -> None:
             0.03,
             0.01,
             help="Margin from frame edges (0.03 = 3%%)",
-            disabled=not enable_cloth,
-        )
-        cloth_max_retries = st.number_input(
-            "Max retry attempts",
-            min_value=0,
-            max_value=10,
-            value=3,
-            help="Maximum retries for failed detections",
             disabled=not enable_cloth,
         )
         max_age = st.number_input("Tracker max age", min_value=1, max_value=120, value=10)
@@ -578,18 +531,13 @@ def run_streaming_dashboard() -> None:
     if is_tensorrt:
         st.info("TensorRT engine detected. Processing one frame at a time.")
 
-    # Load clothing and shoe models if cloth detection is enabled
+    # Load clothing model if cloth detection is enabled
     clothing_model = None
-    shoe_model = None
     if enable_cloth:
         try:
             clothing_model = YOLO(cloth_model_path)
-            if os.path.exists(shoe_model_path):
-                shoe_model = cached_load_shoe_model(shoe_model_path, device)
-            else:
-                st.warning(f"Shoe model not found at {shoe_model_path}. Shoe detection will be disabled.")
         except Exception as e:
-            st.error(f"Failed to load cloth/shoe models: {e}")
+            st.error(f"Failed to load cloth detection model: {e}")
             return
 
     last_timestamps = {name: time.time() for name, _ in caps}
@@ -608,8 +556,8 @@ def run_streaming_dashboard() -> None:
         enable_tracking, enable_reid, enable_cloth,
         max_age, min_hits, track_iou, similarity_lambda,
         reid_threshold, reid_interval, reid_model_path,
-        cloth_model_path, shoe_model_path, cloth_conf, cloth_min_size,
-        cloth_edge_margin, cloth_max_retries,
+        cloth_model_path, cloth_conf, cloth_min_size,
+        cloth_edge_margin,
         device, camera_names
     ))
     
@@ -884,10 +832,8 @@ def run_streaming_dashboard() -> None:
                                                 person_crop,
                                                 cam_idx=cam_idx,
                                                 clothing_model=clothing_model,
-                                                shoe_model=shoe_model,
                                                 global_id=global_id,
                                                 tracking_id=trk["track_id"],
-                                                shoe_conf=shoe_conf,
                                             )
 
                                             # Check if evaluation was actually saved to database

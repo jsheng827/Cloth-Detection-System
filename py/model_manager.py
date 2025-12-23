@@ -38,7 +38,7 @@ def get_models_by_type(model_type: str) -> List[Dict]:
     Get all models of a specific type.
     
     Args:
-        model_type: One of "detection", "reid", "cloth", "shoe"
+        model_type: One of "detection", "reid", "cloth"
     
     Returns:
         List of dicts with keys: name, path, type, uploaded_at
@@ -65,7 +65,7 @@ def add_model(
     
     Args:
         model_name: User-friendly name for the model
-        model_type: One of "detection", "reid", "cloth", "shoe"
+        model_type: One of "detection", "reid", "cloth"
         file_path: Relative path to the model file (e.g., "./model/my_model.pt")
         original_filename: Original filename before rename (optional)
     

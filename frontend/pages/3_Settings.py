@@ -75,8 +75,8 @@ st.markdown('<div class="model-card">', unsafe_allow_html=True)
 st.markdown('<div class="model-header">📦 Model Management</div>', unsafe_allow_html=True)
 
 # Tabs for different model types
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["Detection Models", "Re-ID Models", "Cloth Models", "Shoe Models"]
+tab1, tab2, tab3 = st.tabs(
+    ["Detection Models", "Re-ID Models", "Cloth Models"]
 )
 
 # Helper function to render upload form
@@ -198,12 +198,6 @@ with tab3:
     st.markdown("---")
     render_model_list("cloth", "Cloth Models")
 
-# Shoe Models Tab
-with tab4:
-    render_upload_form("shoe", "Shoe Model")
-    st.markdown("---")
-    render_model_list("shoe", "Shoe Models")
-
 st.markdown("</div>", unsafe_allow_html=True)
 
 # Violation Settings Section
@@ -259,7 +253,7 @@ st.markdown("---")
 with st.expander("ℹ️ How to use Model Management"):
     st.markdown("""
     **Uploading Models:**
-    1. Navigate to the appropriate tab (Detection, Re-ID, Cloth, or Shoe)
+    1. Navigate to the appropriate tab (Detection, Re-ID, or Cloth)
     2. Enter a friendly name for your model
     3. Select the model file (.pt, .pth, .onnx, .engine, or .plan)
     4. Click "Upload Model"

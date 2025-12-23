@@ -10,9 +10,7 @@ import numpy as np
 from ultralytics import YOLO
 
 from config import (
-    SHOE_CONFIDENCE_THRESHOLD,
     CLOTH_CONFIDENCE_THRESHOLD,
-    SHOE_KEYWORDS,
     TOP_KEYWORDS,
     BOTTOM_KEYWORDS,
     DRESS_KEYWORDS,
@@ -95,7 +93,6 @@ def has_complete_coverage(
     tops = []
     bottoms = []
     dresses = []
-    shoes = []
     other = []
     
     for label in clothing_labels:
@@ -106,8 +103,6 @@ def has_complete_coverage(
             bottoms.append(label)
         elif category == "DRESS":
             dresses.append(label)
-        elif any(kw in label.lower() for kw in SHOE_KEYWORDS):
-            shoes.append(label)
         else:
             other.append(label)
     
@@ -130,7 +125,6 @@ def has_complete_coverage(
     unique_tops = deduplicate_category(tops)
     unique_bottoms = deduplicate_category(bottoms)
     unique_dresses = deduplicate_category(dresses)
-    unique_shoes = deduplicate_category(shoes)
     
     # If a dress is detected, filter out tops/bottoms that might be part of the dress
     # (e.g., if "vest_dress" is detected, don't count "vest" as a separate top)
@@ -167,18 +161,17 @@ def has_complete_coverage(
     # Case 1: One unique dress (complete coverage)
     if len(unique_dresses) == 1:
         has_complete = True
-        filtered_labels = unique_dresses + unique_shoes
+        filtered_labels = unique_dresses
     
     # Case 2: One unique top + one unique bottom (complete coverage)
     elif len(unique_tops) == 1 and len(unique_bottoms) == 1:
         has_complete = True
-        filtered_labels = unique_tops + unique_bottoms + unique_shoes
+        filtered_labels = unique_tops + unique_bottoms
     
     # Case 3: Incomplete coverage - don't report yet
     else:
         has_complete = False
-        # Still include shoes if any, but don't save to DB
-        filtered_labels = unique_shoes
+        filtered_labels = []
     
     return has_complete, filtered_labels
 
@@ -225,31 +218,23 @@ def analyze_clothing_and_log(
     person_crop: np.ndarray,
     cam_idx: int,
     clothing_model: YOLO,
-    shoe_model: Optional[YOLO],
     global_id: Optional[int] = None,
     tracking_id: Optional[int] = None,
-    shoe_conf: Optional[float] = None,
 ) -> Tuple[str, str, str]:
     """
-    Run cloth and shoe models on a cropped person image, decide status, save into MongoDB,
+    Run cloth model on a cropped person image, decide status, save into MongoDB,
     and return (status, description, violation_type).
     
     Args:
         person_crop: Cropped image of person (numpy array)
         cam_idx: Camera index (1-based)
         clothing_model: YOLO model for clothing detection
-        shoe_model: Optional YOLO model for shoe detection
         global_id: Optional global ID for person re-identification
         tracking_id: Optional tracking ID
-        shoe_conf: Optional shoe confidence threshold (defaults to config value)
         
     Returns:
         Tuple of (status, violation_description, violation_type)
     """
-    # Use provided shoe_conf or default from config
-    if shoe_conf is None:
-        shoe_conf = SHOE_CONFIDENCE_THRESHOLD
-    
     # Load current violation settings (allows dynamic updates from Settings page)
     banned_keywords = load_violation_settings()
     
@@ -268,44 +253,9 @@ def analyze_clothing_and_log(
         if label not in label_confidences or confidence > label_confidences[label]:
             label_confidences[label] = confidence
 
-    # Run shoe detection model on the lower half of the person crop
-    if shoe_model is not None:
-        h, w = person_crop.shape[:2]
-        # Use bottom 80% of person (keep more context for small people)
-        y_start = int(h * 0.2)
-        shoe_roi = person_crop[y_start:h, :]
-
-        # If ROI is too small, skip
-        if shoe_roi.shape[0] >= 20 and shoe_roi.shape[1] >= 20:
-            # Resize ROI to larger fixed size so shoes aren't tiny
-            shoe_roi_resized = cv2.resize(shoe_roi, (640, 640))
-
-            # Run shoe model
-            shoe_results = shoe_model(
-                shoe_roi_resized,
-                conf=shoe_conf,
-                verbose=False,
-            )[0]
-
-            if shoe_results and shoe_results.boxes is not None:
-                for det in shoe_results.boxes:
-                    cls_id = int(det.cls)
-                    label = shoe_results.names.get(cls_id, "shoe")
-                    confidence = float(det.conf)
-                    labels.append(label)
-                    if label not in label_confidences or confidence > label_confidences[label]:
-                        label_confidences[label] = confidence
-
-    # Apply complete coverage check and deduplication FIRST
-    # Separate clothing from shoes for categorization
-    clothing_only_labels = [
-        label for label in labels
-        if not any(kw in label.lower() for kw in SHOE_KEYWORDS)
-    ]
-    
     # Check for complete coverage (top+bottom OR dress) and get filtered labels
     has_complete, filtered_labels = has_complete_coverage(
-        clothing_only_labels, label_confidences
+        labels, label_confidences
     )
     
     # If no complete coverage, return early without saving to database
@@ -344,14 +294,12 @@ def analyze_clothing_and_log(
 
     # Incremental IDs based on existing records in MongoDB
     eval_id, cloth_id = get_next_evaluation_and_cloth_ids()
-    details = "..." if is_violation else "-"
 
     evaluation_doc = save_evaluation(
         evaluation_id=eval_id,
         clothing_detection_id=cloth_id,
         clothing_category=clothing_category,
         status=status,
-        details=details,
         global_id=global_id,
         tracking_id=tracking_id,
     )
